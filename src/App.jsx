@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
   calcSMA, calcMACD, calcRSI, calcKDJ, UNIVERSE,
-  loadJin10Calendar, loadJin10Flash, loadFollowin,
+  loadCalendar, loadJin10Flash,
 } from "./data.js";
 
 const MA_COLORS = { 5: "#f0e68c", 10: "#87ceeb", 20: "#ff8c69", 60: "#da70d6" };
@@ -212,10 +212,8 @@ export default function App() {
   const [notif, setNotif] = useState(null);
   const [notifOn, setNotifOn] = useState(false);
   const [status, setStatus] = useState("載入中...");
-  const [j10cal, setJ10cal] = useState(undefined); // undefined=loading, null=fail, []=data
+  const [cal, setCal] = useState(undefined); // undefined=loading, null=fail, []=data
   const [j10flash, setJ10flash] = useState(undefined);
-  const [fwFlash, setFwFlash] = useState(undefined);
-  const [fwHead, setFwHead] = useState(undefined);
   const lastSig = useRef(null);
 
   // load market list
@@ -232,15 +230,13 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, [category]);
 
-  // load external feeds (Jin10 + Followin), refresh every 60s
+  // load external feeds (財經日曆 + 金十快訊), refresh every 60s
   useEffect(() => {
     let cancel = false;
     async function run() {
-      const [cal, jf, ff, fh] = await Promise.all([
-        loadJin10Calendar(), loadJin10Flash(), loadFollowin("flash"), loadFollowin("headline"),
-      ]);
+      const [c, jf] = await Promise.all([loadCalendar(), loadJin10Flash()]);
       if (cancel) return;
-      setJ10cal(cal); setJ10flash(jf); setFwFlash(ff); setFwHead(fh);
+      setCal(c); setJ10flash(jf);
     }
     run(); const iv = setInterval(run, 60000);
     return () => { cancel = true; clearInterval(iv); };
@@ -450,10 +446,10 @@ export default function App() {
               </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析真實 K 線 SMC 結構...</div>}
             </>}
             {sideTab === "feeds" && <>
-              <Section title="金十日曆 (財經事件)" color="#f0b90b" badge="Jin10">
-                <FeedState state={j10cal}>
-                  {Array.isArray(j10cal) && j10cal.map((e, i) => (
-                    <div key={i} style={{ padding: "6px 0", borderBottom: i < j10cal.length - 1 ? "1px solid #111824" : "none" }}>
+              <Section title="財經日曆 (經濟事件)" color="#f0b90b" badge="Live">
+                <FeedState state={cal}>
+                  {Array.isArray(cal) && cal.map((e, i) => (
+                    <div key={i} style={{ padding: "6px 0", borderBottom: i < cal.length - 1 ? "1px solid #111824" : "none" }}>
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38 }}>{fmtFeedTime(e.time)}</span>
                         {e.country && <span style={{ color: "#58a6ff", fontSize: 9 }}>{e.country}</span>}
@@ -475,31 +471,6 @@ export default function App() {
                         <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
                       </div>
                     </div>
-                  ))}
-                </FeedState>
-              </Section>
-
-              <Section title="Followin 快訊" color="#2962ff" badge="Followin">
-                <FeedState state={fwFlash}>
-                  {Array.isArray(fwFlash) && fwFlash.map((n, i) => (
-                    <div key={i} style={{ padding: "7px 0", borderBottom: i < fwFlash.length - 1 ? "1px solid #111824" : "none" }}>
-                      <div style={{ display: "flex", gap: 7 }}>
-                        <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
-                        <span style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.5 }}>{n.title}</span>
-                      </div>
-                    </div>
-                  ))}
-                </FeedState>
-              </Section>
-
-              <Section title="Followin 頭條" color="#2962ff" badge="Followin" defaultOpen={false}>
-                <FeedState state={fwHead}>
-                  {Array.isArray(fwHead) && fwHead.map((n, i) => (
-                    <a key={i} href={n.url || undefined} target="_blank" rel="noreferrer" style={{ display: "block", padding: "8px 0", borderBottom: i < fwHead.length - 1 ? "1px solid #111824" : "none", textDecoration: "none" }}>
-                      <div style={{ color: "#e6edf3", fontSize: 12, lineHeight: 1.5, fontWeight: 600 }}>{n.title}</div>
-                      {n.summary && <div style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.5, marginTop: 3 }}>{n.summary.slice(0, 80)}</div>}
-                      <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 3 }}>{n.source} · {fmtFeedTime(n.time)}</div>
-                    </a>
                   ))}
                 </FeedState>
               </Section>
