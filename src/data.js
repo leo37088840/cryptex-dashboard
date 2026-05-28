@@ -86,18 +86,15 @@ export const UNIVERSE = {
   ],
   forex: [
     ["EUR/USD","歐元/美元"],["USD/JPY","美元/日圓"],["GBP/USD","英鎊/美元"],["USD/CHF","美元/瑞郎"],
-    ["AUD/USD","澳幣/美元"],["USD/CAD","美元/加幣"],["NZD/USD","紐幣/美元"],["USD/TWD","美元/台幣"],
-    ["USD/CNY","美元/人民幣"],["USD/HKD","美元/港幣"],["USD/KRW","美元/韓元"],["USD/SGD","美元/新幣"],
-    ["EUR/JPY","歐元/日圓"],["GBP/JPY","英鎊/日圓"],["EUR/GBP","歐元/英鎊"],["AUD/JPY","澳幣/日圓"],
+    ["AUD/USD","澳幣/美元"],["USD/CAD","美元/加幣"],["USD/TWD","美元/台幣"],["EUR/JPY","歐元/日圓"],
   ],
   index: [
     ["SPX","標普500"],["IXIC","那斯達克"],["DJI","道瓊工業"],["NDX","那斯達克100"],
-    ["RUT","羅素2000"],["VIX","恐慌指數"],["TWII","台灣加權"],["N225","日經225"],
-    ["HSI","恆生指數"],["FTSE","英國富時"],["GDAXI","德國DAX"],
+    ["RUT","羅素2000"],["VIX","恐慌指數"],
   ],
   commodity: [
-    ["XAU/USD","黃金"],["XAG/USD","白銀"],["WTI/USD","西德州原油"],["BRENT/USD","布蘭特原油"],
-    ["NG/USD","天然氣"],["HG/USD","銅"],["PL/USD","白金"],["XPT/USD","鉑金"],
+    ["XAU/USD","黃金"],["XAG/USD","白銀"],["WTI/USD","西德州原油"],
+    ["NG/USD","天然氣"],["HG/USD","銅"],["XPT/USD","鉑金"],
   ],
 };
 
@@ -123,32 +120,38 @@ async function loadUSStocks() {
   return out;
 }
 
-async function loadTwelveQuote(symbols) {
-  if (!TWELVEDATA_KEY) return {};
-  const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${TWELVEDATA_KEY}`;
-  const data = await jget(url, { useProxy: true });
-  if (!data) return {};
-  if (data.symbol) return { [data.symbol]: data };
-  return data;
+// Twelve Data 免費版一次只能查 1 個 symbol，且每分鐘限 8 次。
+async function loadTwelveSingle(sym) {
+  if (!TWELVEDATA_KEY) return null;
+  const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}&apikey=${TWELVEDATA_KEY}`;
+  const q = await jget(url, { useProxy: true });
+  if (!q || !q.close) return null;
+  return q;
 }
 
 async function loadTwelveCategory(cat) {
   const defs = UNIVERSE[cat] || [];
-  const symbols = defs.map((d) => d[0]);
-  const map = await loadTwelveQuote(symbols);
-  return defs.map(([sym, label]) => {
-    const q = map[sym];
-    if (!q || !q.close) return null;
-    return {
-      symbol: sym, name: sym, label, cat,
-      price: parseFloat(q.close) || 0,
-      change: parseFloat(q.percent_change) || 0,
-      volume: parseFloat(q.volume) || 0,
-      high: parseFloat(q.high) || 0,
-      low: parseFloat(q.low) || 0,
-      open: parseFloat(q.open) || 0,
-    };
-  }).filter(Boolean);
+  const out = [];
+  for (let i = 0; i < defs.length; i += 6) {
+    const batch = defs.slice(i, i + 6);
+    const qs = await Promise.all(batch.map(([sym]) => loadTwelveSingle(sym)));
+    batch.forEach(([sym, label], j) => {
+      const q = qs[j];
+      if (q && q.close) {
+        out.push({
+          symbol: sym, name: sym, label, cat,
+          price: parseFloat(q.close) || 0,
+          change: parseFloat(q.percent_change) || 0,
+          volume: parseFloat(q.volume) || 0,
+          high: parseFloat(q.high) || 0,
+          low: parseFloat(q.low) || 0,
+          open: parseFloat(q.open) || 0,
+        });
+      }
+    });
+    if (i + 6 < defs.length) await new Promise((r) => setTimeout(r, 1200));
+  }
+  return out;
 }
 
 async function loadFinMindQuote(symbol) {
