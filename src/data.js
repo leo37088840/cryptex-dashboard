@@ -1,8 +1,11 @@
 // ════════════════════════════════════════════════════════════════════════════
-// data.js — real market data + indicators + SMC engine
+// CRYPTEX data layer
 // ════════════════════════════════════════════════════════════════════════════
 
 export const PROXY_URL = import.meta.env.VITE_PROXY_URL || "";
+export const FINNHUB_KEY = import.meta.env.VITE_FINNHUB_KEY || "";
+export const TWELVEDATA_KEY = import.meta.env.VITE_TWELVEDATA_KEY || "";
+export const FINMIND_TOKEN = import.meta.env.VITE_FINMIND_TOKEN || "";
 
 async function jget(url, { useProxy = false } = {}) {
   const targets = [];
@@ -19,7 +22,15 @@ async function jget(url, { useProxy = false } = {}) {
   return null;
 }
 
-// ─── Crypto: merge Binance + OKX + CoinGecko ─────────────────────────────────
+async function getText(url, { useProxy = false } = {}) {
+  const target = useProxy && PROXY_URL ? `${PROXY_URL}/proxy?url=${encodeURIComponent(url)}` : url;
+  try {
+    const res = await fetch(target);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch { return null; }
+}
+
 export async function loadCrypto() {
   const merged = new Map();
   const add = (c) => {
@@ -33,16 +44,11 @@ export async function loadCrypto() {
     jget("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=500&page=1"),
   ]);
   if (Array.isArray(binance)) {
-    binance
-      .filter((t) => t.symbol.endsWith("USDT") && !t.symbol.includes("UP") && !t.symbol.includes("DOWN") && !/\d(?:L|S)USDT$/.test(t.symbol))
+    binance.filter((t) => t.symbol.endsWith("USDT") && !t.symbol.includes("UP") && !t.symbol.includes("DOWN") && !/\d(?:L|S)USDT$/.test(t.symbol))
       .forEach((t) => add({
-        symbol: t.symbol.replace("USDT", "-USDT"),
-        binanceSymbol: t.symbol,
-        name: t.symbol.replace("USDT", ""),
-        cat: "crypto",
-        price: parseFloat(t.lastPrice) || 0,
-        change: parseFloat(t.priceChangePercent) || 0,
-        volume: parseFloat(t.quoteVolume) || 0,
+        symbol: t.symbol.replace("USDT", "-USDT"), binanceSymbol: t.symbol, name: t.symbol.replace("USDT", ""),
+        cat: "crypto", price: parseFloat(t.lastPrice) || 0,
+        change: parseFloat(t.priceChangePercent) || 0, volume: parseFloat(t.quoteVolume) || 0,
       }));
   }
   if (okx?.data?.length) {
@@ -63,151 +69,217 @@ export async function loadCrypto() {
   return Array.from(merged.values()).sort((a, b) => (b.volume || 0) - (a.volume || 0));
 }
 
-async function yahooScreener(scrId, cat, count = 250) {
-  const url = `https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?count=${count}&scrIds=${scrId}`;
-  const data = await jget(url, { useProxy: true });
-  const quotes = data?.finance?.result?.[0]?.quotes || [];
-  return quotes.map((q) => ({
-    symbol: q.symbol, ySym: q.symbol,
-    name: (q.symbol || "").replace(/[.=^].*$/, "") || q.symbol,
-    label: q.shortName || q.longName || q.symbol, cat,
-    price: q.regularMarketPrice ?? 0, change: q.regularMarketChangePercent ?? 0,
-    volume: q.regularMarketVolume ?? 0,
-  })).filter((c) => c.price > 0);
+export const UNIVERSE = {
+  us: [
+    ["AAPL","蘋果"],["MSFT","微軟"],["NVDA","輝達"],["TSLA","特斯拉"],["AMZN","亞馬遜"],
+    ["GOOGL","谷歌"],["META","Meta"],["AMD","超微"],["NFLX","網飛"],["AVGO","博通"],
+    ["INTC","英特爾"],["QCOM","高通"],["ADBE","Adobe"],["CRM","Salesforce"],["ORCL","甲骨文"],
+    ["DIS","迪士尼"],["BA","波音"],["JPM","摩根大通"],["V","Visa"],["MA","萬事達"],
+    ["WMT","沃爾瑪"],["KO","可口可樂"],["MCD","麥當勞"],["NKE","耐吉"],["BABA","阿里巴巴"],
+    ["TSM","台積電ADR"],["UBER","Uber"],["COIN","Coinbase"],["PLTR","Palantir"],["MSTR","Strategy"],
+  ],
+  tw: [
+    ["2330","台積電"],["2317","鴻海"],["2454","聯發科"],["2412","中華電"],["2308","台達電"],
+    ["2303","聯電"],["2881","富邦金"],["2882","國泰金"],["2891","中信金"],["3008","大立光"],
+    ["2603","長榮"],["3711","日月光"],["1303","南亞"],["1301","台塑"],["2002","中鋼"],
+    ["2207","和泰車"],["6669","緯穎"],["3034","聯詠"],["2379","瑞昱"],["2357","華碩"],
+  ],
+  forex: [
+    ["EUR/USD","歐元/美元"],["USD/JPY","美元/日圓"],["GBP/USD","英鎊/美元"],["USD/CHF","美元/瑞郎"],
+    ["AUD/USD","澳幣/美元"],["USD/CAD","美元/加幣"],["NZD/USD","紐幣/美元"],["USD/TWD","美元/台幣"],
+    ["USD/CNY","美元/人民幣"],["USD/HKD","美元/港幣"],["USD/KRW","美元/韓元"],["USD/SGD","美元/新幣"],
+    ["EUR/JPY","歐元/日圓"],["GBP/JPY","英鎊/日圓"],["EUR/GBP","歐元/英鎊"],["AUD/JPY","澳幣/日圓"],
+  ],
+  index: [
+    ["SPX","標普500"],["IXIC","那斯達克"],["DJI","道瓊工業"],["NDX","那斯達克100"],
+    ["RUT","羅素2000"],["VIX","恐慌指數"],["TWII","台灣加權"],["N225","日經225"],
+    ["HSI","恆生指數"],["FTSE","英國富時"],["GDAXI","德國DAX"],
+  ],
+  commodity: [
+    ["XAU/USD","黃金"],["XAG/USD","白銀"],["WTI/USD","西德州原油"],["BRENT/USD","布蘭特原油"],
+    ["NG/USD","天然氣"],["HG/USD","銅"],["PL/USD","白金"],["XPT/USD","鉑金"],
+  ],
+};
+
+async function loadFinnhubQuote(symbol) {
+  if (!FINNHUB_KEY) return null;
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_KEY}`;
+  return await jget(url, { useProxy: true });
 }
 
-async function yahooQuotes(ySymbols) {
-  const out = {};
-  for (let i = 0; i < ySymbols.length; i += 50) {
-    const batch = ySymbols.slice(i, i + 50);
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(batch.join(","))}`;
-    const data = await jget(url, { useProxy: true });
-    (data?.quoteResponse?.result || []).forEach((q) => (out[q.symbol] = q));
+async function loadUSStocks() {
+  const out = [];
+  for (let i = 0; i < UNIVERSE.us.length; i += 10) {
+    const batch = UNIVERSE.us.slice(i, i + 10);
+    const quotes = await Promise.all(batch.map(([sym]) => loadFinnhubQuote(sym)));
+    batch.forEach(([sym, label], j) => {
+      const q = quotes[j];
+      if (q && q.c > 0) {
+        const change = q.pc ? ((q.c - q.pc) / q.pc) * 100 : 0;
+        out.push({ symbol: sym, name: sym, label, cat: "us", price: q.c, change, volume: 0, high: q.h, low: q.l, open: q.o });
+      }
+    });
   }
   return out;
 }
 
-export const UNIVERSE = {
-  stock: [
-    ["AAPL","蘋果","AAPL"],["MSFT","微軟","MSFT"],["NVDA","輝達","NVDA"],
-    ["TSLA","特斯拉","TSLA"],["AMZN","亞馬遜","AMZN"],["GOOGL","谷歌","GOOGL"],
-    ["META","Meta","META"],["AMD","超微","AMD"],["NFLX","網飛","NFLX"],
-    ["AVGO","博通","AVGO"],["INTC","英特爾","INTC"],["QCOM","高通","QCOM"],
-    ["ADBE","Adobe","ADBE"],["CRM","Salesforce","CRM"],["ORCL","甲骨文","ORCL"],
-    ["DIS","迪士尼","DIS"],["BA","波音","BA"],["JPM","摩根大通","JPM"],
-    ["V","Visa","V"],["MA","萬事達","MA"],["WMT","沃爾瑪","WMT"],
-    ["KO","可口可樂","KO"],["MCD","麥當勞","MCD"],["NKE","耐吉","NKE"],
-    ["BABA","阿里巴巴","BABA"],["TSM","台積電ADR","TSM"],["UBER","Uber","UBER"],
-    ["COIN","Coinbase","COIN"],["PLTR","Palantir","PLTR"],["MSTR","Strategy","MSTR"],
-    ["2330","台積電","2330.TW"],["2317","鴻海","2317.TW"],["2454","聯發科","2454.TW"],
-    ["2412","中華電","2412.TW"],["2308","台達電","2308.TW"],["2303","聯電","2303.TW"],
-    ["2881","富邦金","2881.TW"],["2882","國泰金","2882.TW"],["2891","中信金","2891.TW"],
-    ["3008","大立光","3008.TW"],["2603","長榮","2603.TW"],["3711","日月光","3711.TW"],
-  ],
-  forex: [
-    ["EURUSD","歐元/美元","EURUSD=X"],["USDJPY","美元/日圓","USDJPY=X"],
-    ["GBPUSD","英鎊/美元","GBPUSD=X"],["USDCHF","美元/瑞郎","USDCHF=X"],
-    ["AUDUSD","澳幣/美元","AUDUSD=X"],["USDCAD","美元/加幣","USDCAD=X"],
-    ["NZDUSD","紐幣/美元","NZDUSD=X"],["USDTWD","美元/台幣","USDTWD=X"],
-    ["USDCNY","美元/人民幣","USDCNY=X"],["USDHKD","美元/港幣","USDHKD=X"],
-    ["USDKRW","美元/韓元","USDKRW=X"],["USDSGD","美元/新幣","USDSGD=X"],
-    ["EURJPY","歐元/日圓","EURJPY=X"],["GBPJPY","英鎊/日圓","GBPJPY=X"],
-    ["EURGBP","歐元/英鎊","EURGBP=X"],["AUDJPY","澳幣/日圓","AUDJPY=X"],
-  ],
-  futures: [
-    ["ES","標普500期貨","ES=F"],["NQ","那斯達克期貨","NQ=F"],["YM","道瓊期貨","YM=F"],
-    ["RTY","羅素2000期貨","RTY=F"],["CL","西德州原油","CL=F"],["BZ","布蘭特原油","BZ=F"],
-    ["GC","黃金期貨","GC=F"],["SI","白銀期貨","SI=F"],["HG","銅期貨","HG=F"],
-    ["NG","天然氣期貨","NG=F"],["ZC","玉米期貨","ZC=F"],["ZW","小麥期貨","ZW=F"],
-  ],
-  index: [
-    ["SPX","標普500","^GSPC"],["IXIC","那斯達克","^IXIC"],["DJI","道瓊工業","^DJI"],
-    ["RUT","羅素2000","^RUT"],["NDX","那斯達克100","^NDX"],["VIX","恐慌指數","^VIX"],
-    ["TWII","台灣加權","^TWII"],["N225","日經225","^N225"],["HSI","恆生指數","^HSI"],
-    ["KS11","韓國KOSPI","^KS11"],["FTSE","英國富時","^FTSE"],["GDAXI","德國DAX","^GDAXI"],
-  ],
-  commodity: [
-    ["XAUUSD","黃金","GC=F"],["XAGUSD","白銀","SI=F"],["WTI","西德州原油","CL=F"],
-    ["BRENT","布蘭特原油","BZ=F"],["NG","天然氣","NG=F"],["HG","銅","HG=F"],
-    ["PL","白金","PL=F"],["ZC","玉米","ZC=F"],["ZW","小麥","ZW=F"],
-    ["KC","咖啡","KC=F"],["SB","糖","SB=F"],["CT","棉花","CT=F"],
-  ],
-};
+async function loadTwelveQuote(symbols) {
+  if (!TWELVEDATA_KEY) return {};
+  const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${TWELVEDATA_KEY}`;
+  const data = await jget(url, { useProxy: true });
+  if (!data) return {};
+  if (data.symbol) return { [data.symbol]: data };
+  return data;
+}
+
+async function loadTwelveCategory(cat) {
+  const defs = UNIVERSE[cat] || [];
+  const symbols = defs.map((d) => d[0]);
+  const map = await loadTwelveQuote(symbols);
+  return defs.map(([sym, label]) => {
+    const q = map[sym];
+    if (!q || !q.close) return null;
+    return {
+      symbol: sym, name: sym, label, cat,
+      price: parseFloat(q.close) || 0,
+      change: parseFloat(q.percent_change) || 0,
+      volume: parseFloat(q.volume) || 0,
+      high: parseFloat(q.high) || 0,
+      low: parseFloat(q.low) || 0,
+      open: parseFloat(q.open) || 0,
+    };
+  }).filter(Boolean);
+}
+
+async function loadFinMindQuote(symbol) {
+  if (!FINMIND_TOKEN) return null;
+  const today = new Date();
+  const ymd = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${symbol}&start_date=${ymd}&token=${FINMIND_TOKEN}`;
+  const data = await jget(url, { useProxy: true });
+  return data?.data?.[0] || null;
+}
+
+async function loadTWStocks() {
+  const defs = UNIVERSE.tw;
+  const out = [];
+  for (let i = 0; i < defs.length; i += 5) {
+    const batch = defs.slice(i, i + 5);
+    const rows = await Promise.all(batch.map(([sym]) => loadFinMindQuote(sym)));
+    batch.forEach(([sym, label], j) => {
+      const r = rows[j];
+      if (r && r.close > 0) {
+        out.push({
+          symbol: sym, name: sym, label, cat: "tw",
+          price: r.close,
+          change: r.spread ? (r.spread / (r.close - r.spread)) * 100 : 0,
+          volume: r.Trading_Volume || 0,
+          high: r.max, low: r.min, open: r.open,
+        });
+      }
+    });
+  }
+  return out;
+}
 
 export async function loadMarket(cat) {
   if (cat === "crypto") return loadCrypto();
-  if (cat === "stock") {
-    const dyn = await yahooScreener("most_actives", "stock", 250);
-    if (dyn.length > 8) {
-      const twDefs = UNIVERSE.stock.filter((d) => d[2].endsWith(".TW"));
-      const q = await yahooQuotes(twDefs.map((d) => d[2]));
-      const have = new Set(dyn.map((d) => d.symbol));
-      twDefs.forEach(([name, label, ySym]) => {
-        if (!have.has(ySym) && q[ySym]) dyn.push({ symbol: name, name, label, cat: "stock", ySym, price: q[ySym].regularMarketPrice, change: q[ySym].regularMarketChangePercent || 0, volume: q[ySym].regularMarketVolume || 0 });
-      });
-      return dyn.sort((a, b) => (b.volume || 0) - (a.volume || 0));
-    }
-  }
-  if (cat === "forex") {
-    const dyn = await yahooScreener("all_currencies", "forex", 100);
-    if (dyn.length > 8) return dyn;
-  }
-  const defs = UNIVERSE[cat] || [];
-  const q = await yahooQuotes(defs.map((d) => d[2]));
-  return defs.map(([name, label, ySym]) => ({
-    symbol: name, name, label, cat, ySym,
-    price: q[ySym]?.regularMarketPrice ?? 0,
-    change: q[ySym]?.regularMarketChangePercent ?? 0,
-    volume: q[ySym]?.regularMarketVolume ?? 0,
-  })).filter((c) => c.price > 0);
+  if (cat === "us") return loadUSStocks();
+  if (cat === "tw") return loadTWStocks();
+  if (cat === "forex" || cat === "index" || cat === "commodity") return loadTwelveCategory(cat);
+  return [];
 }
 
-const BINANCE_TF = { "15m": "15m", "1H": "1h", "4H": "4h", "1D": "1d" };
-const YAHOO_TF = {
-  "15m": { interval: "15m", range: "5d" },
-  "1H": { interval: "60m", range: "1mo" },
-  "4H": { interval: "60m", range: "3mo" },
-  "1D": { interval: "1d", range: "1y" },
-};
+const BINANCE_TF = { "15m":"15m", "1H":"1h", "4H":"4h", "1D":"1d" };
+const TWELVE_TF = { "15m":"15min", "1H":"1h", "4H":"4h", "1D":"1day" };
+const FINNHUB_TF = { "15m":"15", "1H":"60", "4H":"240", "1D":"D" };
+
+async function klinesBinance(item, tf) {
+  const sym = item.binanceSymbol || `${item.name}USDT`;
+  const interval = BINANCE_TF[tf] || "15m";
+  const b = await jget(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${interval}&limit=500`);
+  if (!Array.isArray(b) || !b.length) return null;
+  return b.map((k) => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
+}
+
+async function klinesTwelve(item, tf) {
+  if (!TWELVEDATA_KEY) return null;
+  const interval = TWELVE_TF[tf] || "15min";
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(item.symbol)}&interval=${interval}&outputsize=300&apikey=${TWELVEDATA_KEY}`;
+  const data = await jget(url, { useProxy: true });
+  if (!data?.values) return null;
+  return data.values.map((r) => ({
+    t: new Date(r.datetime).getTime(),
+    o: parseFloat(r.open), h: parseFloat(r.high), l: parseFloat(r.low), c: parseFloat(r.close),
+    v: parseFloat(r.volume || 0),
+  })).reverse();
+}
+
+async function klinesFinnhub(item, tf) {
+  if (!FINNHUB_KEY) return null;
+  const resolution = FINNHUB_TF[tf] || "15";
+  const to = Math.floor(Date.now() / 1000);
+  const back = tf === "1D" ? 365 * 86400 : tf === "4H" ? 90 * 86400 : tf === "1H" ? 30 * 86400 : 7 * 86400;
+  const from = to - back;
+  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(item.symbol)}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_KEY}`;
+  const data = await jget(url, { useProxy: true });
+  if (!data || data.s !== "ok" || !data.t?.length) return null;
+  return data.t.map((t, i) => ({ t: t * 1000, o: data.o[i], h: data.h[i], l: data.l[i], c: data.c[i], v: data.v?.[i] || 0 }));
+}
+
+async function klinesFinMind(item, tf) {
+  if (!FINMIND_TOKEN) return null;
+  const days = tf === "1D" ? 365 : tf === "4H" ? 90 : tf === "1H" ? 30 : 7;
+  const start = new Date(Date.now() - days * 86400 * 1000);
+  const ymd = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+  const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${item.symbol}&start_date=${ymd}&token=${FINMIND_TOKEN}`;
+  const data = await jget(url, { useProxy: true });
+  if (!data?.data?.length) return null;
+  return data.data.map((r) => ({
+    t: new Date(r.date).getTime(),
+    o: r.open, h: r.max, l: r.min, c: r.close, v: r.Trading_Volume || 0,
+  }));
+}
 
 export async function loadKlines(item, tf) {
   if (!item) return null;
-  if (item.cat === "crypto") {
-    const bSym = item.binanceSymbol || `${item.name}USDT`;
-    const interval = BINANCE_TF[tf] || "15m";
-    const b = await jget(`https://api.binance.com/api/v3/klines?symbol=${bSym}&interval=${interval}&limit=500`);
-    if (Array.isArray(b) && b.length) return b.map((k) => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
-    const okxBar = { "15m": "15m", "1H": "1H", "4H": "4H", "1D": "1D" }[tf] || "15m";
-    const oId = item.okxSymbol || `${item.name}-USDT`;
-    const o = await jget(`https://www.okx.com/api/v5/market/candles?instId=${oId}&bar=${okxBar}&limit=300`);
-    if (o?.data?.length) return o.data.map((k) => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] })).reverse();
-    return null;
-  }
-  const ySym = item.ySym || item.symbol;
-  const cfg = YAHOO_TF[tf] || YAHOO_TF["1D"];
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}?interval=${cfg.interval}&range=${cfg.range}`;
-  const data = await jget(url, { useProxy: true });
-  const r = data?.chart?.result?.[0];
-  if (!r) return null;
-  const ts = r.timestamp || [];
-  const q = r.indicators?.quote?.[0] || {};
-  let candles = ts.map((t, i) => ({ t: t * 1000, o: q.open?.[i], h: q.high?.[i], l: q.low?.[i], c: q.close?.[i], v: q.volume?.[i] || 0 })).filter((c) => c.o != null && c.c != null);
-  if (tf === "4H") candles = aggregate(candles, 4);
-  return candles;
+  if (item.cat === "crypto") return klinesBinance(item, tf);
+  if (item.cat === "us") return klinesFinnhub(item, tf);
+  if (item.cat === "tw") return klinesFinMind(item, tf);
+  if (item.cat === "forex" || item.cat === "index" || item.cat === "commodity") return klinesTwelve(item, tf);
+  return null;
 }
 
-function aggregate(candles, group) {
-  const out = [];
-  for (let i = 0; i < candles.length; i += group) {
-    const g = candles.slice(i, i + group);
-    if (!g.length) continue;
-    out.push({ t: g[0].t, o: g[0].o, h: Math.max(...g.map((c) => c.h)), l: Math.min(...g.map((c) => c.l)), c: g[g.length - 1].c, v: g.reduce((a, c) => a + c.v, 0) });
-  }
-  return out;
+export function subscribeCryptoTicker(binanceSymbol, onTick) {
+  if (!binanceSymbol) return () => {};
+  const sym = binanceSymbol.toLowerCase();
+  let ws = null, closed = false, retry = 0;
+  const connect = () => {
+    if (closed) return;
+    try {
+      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@trade`);
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          if (d.p) onTick(parseFloat(d.p), binanceSymbol);
+        } catch {}
+      };
+      ws.onclose = () => {
+        if (closed) return;
+        retry = Math.min(retry + 1, 5);
+        setTimeout(connect, retry * 1000);
+      };
+      ws.onerror = () => { try { ws.close(); } catch {} };
+    } catch {}
+  };
+  connect();
+  return () => { closed = true; try { ws && ws.close(); } catch {} };
 }
 
-export function calcSMA(d, p) { return d.map((_, i) => (i < p - 1 ? null : d.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p)); }
-export function calcEMA(d, p) { const k = 2 / (p + 1), e = []; d.forEach((v, i) => e.push(i === 0 ? v : v * k + e[i - 1] * (1 - k))); return e; }
+export function calcSMA(d, p) {
+  return d.map((_, i) => (i < p - 1 ? null : d.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p));
+}
+export function calcEMA(d, p) { const k = 2/(p+1), e=[]; d.forEach((v,i)=>e.push(i===0?v:v*k+e[i-1]*(1-k))); return e; }
 export function calcMACD(c) {
   const e12 = calcEMA(c, 12), e26 = calcEMA(c, 26);
   const macd = e12.map((v, i) => v - e26[i]);
@@ -232,6 +304,22 @@ export function calcKDJ(h, lo, c, p = 9) {
     const k = (pk * 2) / 3 + rsv / 3, d = (pd * 2) / 3 + k / 3;
     pk = k; pd = d;
     return { k, d, j: 3 * k - 2 * d };
+  });
+}
+export function calcATR(h, l, c, p = 14) {
+  const tr = h.map((_, i) => i === 0 ? h[i] - l[i] : Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
+  return calcSMA(tr, p);
+}
+export function calcADX(h, l, c, p = 14) {
+  const tr = h.map((_, i) => i === 0 ? h[i] - l[i] : Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
+  const plusDM = h.map((_, i) => i === 0 ? 0 : Math.max(h[i] - h[i - 1], 0));
+  const minusDM = l.map((_, i) => i === 0 ? 0 : Math.max(l[i - 1] - l[i], 0));
+  const atr = calcSMA(tr, p), plus = calcSMA(plusDM, p), minus = calcSMA(minusDM, p);
+  return c.map((_, i) => {
+    if (i < p - 1 || !atr[i]) return null;
+    const pdi = (plus[i] / atr[i]) * 100, mdi = (minus[i] / atr[i]) * 100;
+    const dx = Math.abs(pdi - mdi) / Math.max(pdi + mdi, 1e-9) * 100;
+    return dx;
   });
 }
 
@@ -323,20 +411,72 @@ export async function analyzeSMCMulti(item) {
   return results;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// EXTERNAL FEEDS — 金十快訊 + 財經日曆（穩定來源）
-// 透過代理抓取；抓到後依格式解析，失敗回 null（UI 顯示佔位）
-// ════════════════════════════════════════════════════════════════════════════
-
-async function getTextViaProxy(url) {
-  const target = PROXY_URL ? `${PROXY_URL}/proxy?url=${encodeURIComponent(url)}` : url;
-  try {
-    const res = await fetch(target);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
+export function aiAnalyze(item, candles, smc, smcMulti) {
+  if (!candles || candles.length < 50 || !smc) return null;
+  const closes = candles.map(c => c.c), highs = candles.map(c => c.h), lows = candles.map(c => c.l), vols = candles.map(c => c.v || 0);
+  const n = closes.length - 1, price = closes[n];
+  let bullScore = 0, bearScore = 0;
+  const factors = [];
+  const valid = (smcMulti || []).filter(m => m.result);
+  const longs = valid.filter(m => m.result.signal.includes("做多")).length;
+  const shorts = valid.filter(m => m.result.signal.includes("做空")).length;
+  if (longs >= 3) { bullScore += 3; factors.push({ k: "多時區共振", v: `${longs}/${valid.length} 多頭`, side: "bull" }); }
+  else if (shorts >= 3) { bearScore += 3; factors.push({ k: "多時區共振", v: `${shorts}/${valid.length} 空頭`, side: "bear" }); }
+  else if (longs > shorts) { bullScore += 1; factors.push({ k: "多時區共振", v: `${longs}多 / ${shorts}空，偏多`, side: "bull" }); }
+  else if (shorts > longs) { bearScore += 1; factors.push({ k: "多時區共振", v: `${shorts}空 / ${longs}多，偏空`, side: "bear" }); }
+  else { factors.push({ k: "多時區共振", v: "分歧", side: "neutral" }); }
+  if (smc.signal.includes("強力做多")) { bullScore += 2; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bull" }); }
+  else if (smc.signal.includes("做多")) { bullScore += 1; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bull" }); }
+  else if (smc.signal.includes("強力做空")) { bearScore += 2; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bear" }); }
+  else if (smc.signal.includes("做空")) { bearScore += 1; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bear" }); }
+  else factors.push({ k: "SMC 主訊號", v: "觀望", side: "neutral" });
+  const adx = calcADX(highs, lows, closes);
+  const adxNow = adx[n];
+  if (adxNow != null) {
+    if (adxNow > 25) factors.push({ k: "趨勢強度", v: `強趨勢 (ADX ${adxNow.toFixed(0)})`, side: "neutral" });
+    else if (adxNow > 15) factors.push({ k: "趨勢強度", v: `中等 (ADX ${adxNow.toFixed(0)})`, side: "neutral" });
+    else factors.push({ k: "趨勢強度", v: `盤整 (ADX ${adxNow.toFixed(0)})`, side: "neutral" });
   }
+  const ma5 = calcSMA(closes, 5)[n], ma20 = calcSMA(closes, 20)[n], ma60 = calcSMA(closes, 60)[n];
+  if (ma5 && ma20 && ma60) {
+    if (ma5 > ma20 && ma20 > ma60) { bullScore += 2; factors.push({ k: "均線排列", v: "多頭排列 (5>20>60)", side: "bull" }); }
+    else if (ma5 < ma20 && ma20 < ma60) { bearScore += 2; factors.push({ k: "均線排列", v: "空頭排列 (5<20<60)", side: "bear" }); }
+    else factors.push({ k: "均線排列", v: "糾結", side: "neutral" });
+  }
+  const recentVol = vols.slice(-5).reduce((a, b) => a + b, 0) / 5;
+  const baseVol = vols.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  if (baseVol > 0) {
+    const ratio = recentVol / baseVol;
+    if (ratio > 1.3) factors.push({ k: "量能", v: `放量 (${ratio.toFixed(1)}x)`, side: "neutral" });
+    else if (ratio < 0.7) factors.push({ k: "量能", v: `縮量 (${ratio.toFixed(1)}x)`, side: "neutral" });
+    else factors.push({ k: "量能", v: "正常", side: "neutral" });
+  }
+  const atr = calcATR(highs, lows, closes);
+  const atrNow = atr[n] || (price * 0.01);
+  const totalScore = bullScore - bearScore;
+  const conf = Math.min(95, Math.round((Math.abs(totalScore) / 7) * 100));
+  let direction = "觀望", color = "#787b86", emoji = "⚖️";
+  if (totalScore >= 5) { direction = "強烈做多"; color = "#26a69a"; emoji = "🚀"; }
+  else if (totalScore >= 3) { direction = "做多"; color = "#26a69a"; emoji = "📈"; }
+  else if (totalScore <= -5) { direction = "強烈做空"; color = "#ef5350"; emoji = "💥"; }
+  else if (totalScore <= -3) { direction = "做空"; color = "#ef5350"; emoji = "📉"; }
+  else if (totalScore >= 1) { direction = "偏多"; color = "#7fb284"; emoji = "↗️"; }
+  else if (totalScore <= -1) { direction = "偏空"; color = "#d98890"; emoji = "↘️"; }
+  const isLong = totalScore > 0;
+  const entry = price;
+  const stop = isLong ? price - atrNow * 1.5 : price + atrNow * 1.5;
+  const target1 = isLong ? price + atrNow * 2 : price - atrNow * 2;
+  const target2 = isLong ? price + atrNow * 4 : price - atrNow * 4;
+  const rr = Math.abs(target1 - entry) / Math.abs(entry - stop);
+  const summary = totalScore === 0
+    ? "目前訊號分歧或盤整，建議觀望等待更明確方向。"
+    : `${emoji} 綜合判斷偏向 ${direction}，信心度 ${conf}%。主要依據：${factors.filter(f => f.side === (isLong ? "bull" : "bear")).map(f => f.k).join("、") || "多項技術訊號"}。`;
+  return {
+    direction, color, emoji, confidence: conf, score: totalScore,
+    factors, summary,
+    plan: { entry, stop, target1, target2, rr: rr.toFixed(2), atr: atrNow, isLong },
+    risk: "本分析為演算法綜合多項技術指標，僅供參考。實際交易請結合資金管理、風險控制與個人判斷。",
+  };
 }
 
 function extractJsonArray(txt) {
@@ -347,9 +487,8 @@ function extractJsonArray(txt) {
   try { return JSON.parse(txt.slice(start, end + 1)); } catch { return null; }
 }
 
-// 金十快訊（格式："var newest = [...]"）
 export async function loadJin10Flash() {
-  const txt = await getTextViaProxy("https://www.jin10.com/flash_newest.js");
+  const txt = await getText("https://www.jin10.com/flash_newest.js", { useProxy: true });
   const rows = extractJsonArray(txt);
   if (!Array.isArray(rows)) return null;
   return rows.slice(0, 40).map((r) => {
@@ -359,26 +498,6 @@ export async function loadJin10Flash() {
   }).filter((x) => x.text);
 }
 
-// 財經日曆 — Forex Factory 公開週曆 JSON（穩定，官方經濟數據）
 export async function loadCalendar() {
-  const data = await jget("https://nfs.faireconomy.media/ff_calendar_thisweek.json", { useProxy: true });
-  if (!Array.isArray(data) || data.length === 0) return null;
-  const impMap = { High: 3, Medium: 2, Low: 1, Holiday: 0 };
-  const now = Date.now();
-  return data
-    .map((r) => ({
-      time: r.date || "",
-      country: r.country || "",
-      event: r.title || "—",
-      importance: impMap[r.impact] ?? 0,
-      actual: r.actual ?? "",
-      forecast: r.forecast ?? "",
-      previous: r.previous ?? "",
-    }))
-    .filter((e) => {
-      const t = new Date(e.time).getTime();
-      return !isNaN(t) && t >= now - 24 * 3600 * 1000;
-    })
-    .sort((a, b) => new Date(a.time) - new Date(b.time))
-    .slice(0, 60);
+  return null;
 }
