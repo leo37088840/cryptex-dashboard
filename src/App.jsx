@@ -418,7 +418,19 @@ export default function App() {
     setLivePrice(0);
     if (!selected || selected.cat !== "crypto") return;
     const sym = selected.binanceSymbol || `${selected.name}USDT`;
-    const off = subscribeCryptoTicker(sym, (p) => setLivePrice(p));
+    const off = subscribeCryptoTicker(sym, (p) => {
+      setLivePrice(p);
+      setCandles((cs) => {
+        if (!cs || !cs.length) return cs;
+        const copy = cs.slice();
+        const last = { ...copy[copy.length - 1] };
+        last.c = p;
+        if (p > last.h) last.h = p;
+        if (p < last.l) last.l = p;
+        copy[copy.length - 1] = last;
+        return copy;
+      });
+    });
     return () => off();
   }, [selected]);
 
@@ -446,7 +458,7 @@ export default function App() {
 
   const drawKey = `${selected?.symbol || "x"}-${tf}`;
 
-  const CoinList = ({ horizontal }) => (
+  const renderCoinList = (horizontal) => (
     <>
       <div style={{ display: "flex", flexWrap: horizontal ? "nowrap" : "wrap", gap: 4, padding: horizontal ? "6px 8px 0" : "8px 8px 4px", overflowX: horizontal ? "auto" : "visible" }}>
         {MARKET_CATS.map((c) => (
@@ -454,7 +466,7 @@ export default function App() {
         ))}
       </div>
       <div style={{ padding: "4px 8px 6px" }}>
-        <SearchInput value={search} onChange={setSearch} />
+        <SearchInput key="search-box" value={search} onChange={setSearch} />
       </div>
     </>
   );
@@ -487,7 +499,7 @@ export default function App() {
       </div>
 
       {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
-        <CoinList horizontal />
+        {renderCoinList(true)}
         <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
           {filtered.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
             <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 1, minWidth: 78 }}>
@@ -499,7 +511,7 @@ export default function App() {
 
       <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden", minHeight: 0 }}>
         {!isMobile && <div style={{ width: 180, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          <CoinList />
+          {renderCoinList(false)}
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
             {filtered.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
