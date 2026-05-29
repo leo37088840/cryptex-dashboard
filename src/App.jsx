@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti, aiAnalyze, aiAnalyzeCryptoDeep,
   calcSMA, calcMACD, calcRSI, calcKDJ, UNIVERSE,
-  loadJin10Flash, loadCalendar, subscribeCryptoTicker, loadPeriodChanges,
-  scanRecommendations, scanAnomalies,
+  loadJin10Flash, loadCalendar, subscribeCryptoTicker, subscribeCryptoKline, loadPeriodChanges,
+  scanRecommendations, scanAnomalies, backtest,
 } from "./data.js";
 
 const MA_COLORS = { 5: "#f0e68c", 10: "#87ceeb", 20: "#ff8c69", 60: "#da70d6" };
@@ -375,6 +375,9 @@ export default function App() {
   const [aiDeep, setAiDeep] = useState(null);
   const [aiDeepLoading, setAiDeepLoading] = useState(false);
   const [listLimit, setListLimit] = useState(50);
+  const [btResult, setBtResult] = useState(null);
+  const [btLoading, setBtLoading] = useState(false);
+  const [btTf, setBtTf] = useState("1H");
   const lastSig = useRef(null);
   const lastWsTs = useRef(0);
 
@@ -411,16 +414,17 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, []);
 
-  // 載入 K 線
+  // 載入 K 線歷史（一次性，後續由 K 線 WS 即時更新，不再輪詢）
   useEffect(() => {
     if (!selected) return; let cancel = false;
     setCandles([]); // 清舊資料，避免切換時閃舊圖
     async function run() { const k = await loadKlines(selected, tf); if (!cancel && k && k.length) setCandles(k); }
-    run(); const iv = setInterval(run, 15000);
-    return () => { cancel = true; clearInterval(iv); };
+    run();
+    return () => { cancel = true; };
   }, [selected, tf]);
 
-  // SMC 主訊號
+  // SMC 主訊號（只在新 K 棒生成時重算，避免 K 棒內部 tick 觸發整頁重算）
+  const lastCandleT = candles.length > 0 ? candles[candles.length - 1].t : 0;
   useEffect(() => {
     if (candles.length < 40 || !selected) { setSmc(null); return; }
     const r = analyzeSMC(candles); setSmc(r);
@@ -437,7 +441,8 @@ export default function App() {
         setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
       }
     }
-  }, [candles, selected, notifOn]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastCandleT, selected, notifOn]);
 
   // SMC 多時區
   useEffect(() => {
@@ -446,11 +451,12 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
-  // AI 分析
+  // AI 分析（依賴 smc，不依賴 candles，避免 tick 觸發重算）
   useEffect(() => {
     if (!selected || !candles.length || !smc) { setAI(null); return; }
     setAI(aiAnalyze(selected, candles, smc, smcMulti));
-  }, [selected, candles, smc, smcMulti]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, smc, smcMulti]);
 
   // 多週期漲跌（今日/7天/30天/90天/180天/1年）
   useEffect(() => {
@@ -461,30 +467,42 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
-  // 加密貨幣 WebSocket 即時推送（節流 150ms 避免過度 re-render）
+  // 加密貨幣 trade WebSocket — 只更新左上即時價（節流 100ms）
   useEffect(() => {
     setLivePrice(0);
     if (!selected || selected.cat !== "crypto") return;
     const sym = selected.binanceSymbol || `${selected.name}USDT`;
     const off = subscribeCryptoTicker(sym, (p) => {
       const now = Date.now();
-      if (now - lastWsTs.current < 150) return;
+      if (now - lastWsTs.current < 100) return;
       lastWsTs.current = now;
       setLivePrice(p);
-      // 同步更新最後一根 K 棒，讓 K 線即時跟著動
+    });
+    return () => off();
+  }, [selected]);
+
+  // 加密貨幣 K 線 WebSocket — 每秒推送，更新最後一根 K 棒（取代輪詢）
+  useEffect(() => {
+    if (!selected || selected.cat !== "crypto") return;
+    const sym = selected.binanceSymbol || `${selected.name}USDT`;
+    const off = subscribeCryptoKline(sym, tf, (k) => {
       setCandles((cs) => {
         if (!cs || !cs.length) return cs;
         const copy = cs.slice();
-        const last = { ...copy[copy.length - 1] };
-        last.c = p;
-        if (p > last.h) last.h = p;
-        if (p < last.l) last.l = p;
-        copy[copy.length - 1] = last;
+        const last = copy[copy.length - 1];
+        if (k.t === last.t) {
+          // 同一根 K 棒，更新 OHLC
+          copy[copy.length - 1] = { t: last.t, o: last.o, h: k.h, l: k.l, c: k.c, v: k.v };
+        } else if (k.t > last.t) {
+          // 新一根 K 棒
+          copy.push({ t: k.t, o: k.o, h: k.h, l: k.l, c: k.c, v: k.v });
+          if (copy.length > 500) copy.shift();
+        }
         return copy;
       });
     });
     return () => off();
-  }, [selected]);
+  }, [selected, tf]);
 
   // 多空推薦掃描（切到「推薦」分頁時觸發，5 分鐘內不重掃）
   const coinsLoaded = coins.length > 0;
@@ -536,6 +554,22 @@ export default function App() {
     }).catch(() => { if (!cancel) setAiDeepLoading(false); });
     return () => { cancel = true; };
   }, [sideTab, selected, smc, smcMulti]);
+
+  // 回測（切到回測分頁時跑一次，selected/btTf 變動時重跑）
+  useEffect(() => {
+    if (sideTab !== "backtest" || !selected) return;
+    let cancel = false;
+    setBtLoading(true);
+    setBtResult(null);
+    (async () => {
+      const k = await loadKlines(selected, btTf);
+      if (cancel) return;
+      if (!k || k.length < 80) { setBtLoading(false); return; }
+      const r = backtest(k);
+      if (!cancel) { setBtResult(r); setBtLoading(false); }
+    })();
+    return () => { cancel = true; };
+  }, [sideTab, selected, btTf]);
 
   async function enableNotif() {
     if (typeof Notification === "undefined") { setNotifOn(true); return; }
@@ -679,7 +713,7 @@ export default function App() {
 
         {(!isMobile || mobileView === "panel") && <div style={{ width: isMobile ? "100%" : 300, background: "#080d14", borderLeft: isMobile ? "none" : "1px solid #1a2535", display: "flex", flexDirection: "column", overflow: "hidden", flex: isMobile ? 1 : "none", minHeight: 0 }}>
           <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto" }}>
-            {[["indicators", "指標"], ["smc", "SMC"], ["ai", "AI 分析"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 56, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>)}
+            {[["indicators", "指標"], ["smc", "SMC"], ["ai", "AI 分析"], ["recs", "推薦"], ["alerts", "警報"], ["backtest", "回測"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 56, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>)}
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 8px" }}>
             {sideTab === "indicators" && indData && <>
@@ -865,6 +899,81 @@ export default function App() {
                 <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌，可能誘導空單進場</p>
                 <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升，多頭已減倉但漲不停</p>
               </div>
+            </>}
+
+            {sideTab === "backtest" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>SMC 策略回測</div>
+                    <div style={{ color: "#4a5568", fontSize: 9 }}>{selected?.symbol} · 進場 ATR 止損 1.5x / 目標 2x</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {["15m", "1H", "4H", "1D"].map((t) => (
+                      <button key={t} onClick={() => setBtTf(t)} style={{ background: btTf === t ? "#0f1e2e" : "transparent", border: `1px solid ${btTf === t ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: btTf === t ? "#58a6ff" : "#8b949e", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>{t}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {btLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>回測中...</div>}
+              {!btLoading && btResult && btResult.stats.total === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>歷史資料中沒有產生交易訊號</div>}
+              {!btLoading && btResult && btResult.stats.total > 0 && <>
+                <div style={{ background: `${btResult.stats.totalPnl >= 0 ? "#26a69a" : "#ef5350"}14`, border: `1px solid ${btResult.stats.totalPnl >= 0 ? "#26a69a" : "#ef5350"}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
+                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>總損益（累積 %）</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: btResult.stats.totalPnl >= 0 ? "#26a69a" : "#ef5350", fontFamily: "monospace" }}>{btResult.stats.totalPnl >= 0 ? "+" : ""}{btResult.stats.totalPnl.toFixed(2)}%</div>
+                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginTop: 2 }}>{btResult.stats.total} 筆交易 · 勝率 {btResult.stats.winRate.toFixed(1)}%</div>
+                </div>
+                <Section title="績效摘要" color="#58a6ff">
+                  <IndRow label="總交易數" value={btResult.stats.total} />
+                  <IndRow label="勝場 / 敗場" value={`${btResult.stats.wins} / ${btResult.stats.losses}`} />
+                  <IndRow label="勝率" value={`${btResult.stats.winRate.toFixed(1)}%`} color={btResult.stats.winRate >= 50 ? "#26a69a" : "#ef5350"} />
+                  <IndRow label="平均獲利" value={`+${btResult.stats.avgWin.toFixed(2)}%`} color="#26a69a" />
+                  <IndRow label="平均虧損" value={`${btResult.stats.avgLoss.toFixed(2)}%`} color="#ef5350" />
+                  <IndRow label="獲利因子 PF" value={btResult.stats.profitFactor.toFixed(2)} color={btResult.stats.profitFactor >= 1.5 ? "#26a69a" : btResult.stats.profitFactor >= 1 ? "#f0e68c" : "#ef5350"} />
+                  <IndRow label="最大回撤" value={`${btResult.stats.maxDD.toFixed(2)}%`} color="#ef5350" />
+                </Section>
+                <Section title="累積績效曲線" color="#a78bfa">
+                  {(() => {
+                    const eq = btResult.equity;
+                    if (eq.length < 2) return <div style={{ color: "#4a5568", fontSize: 10 }}>資料不足</div>;
+                    const W = 260, H = 80, PAD = 4;
+                    const cums = eq.map((e) => e.cum);
+                    const mn = Math.min(0, ...cums), mx = Math.max(0, ...cums);
+                    const range = mx - mn || 1;
+                    const points = eq.map((e, i) => {
+                      const x = PAD + (i / (eq.length - 1)) * (W - PAD * 2);
+                      const y = H - PAD - ((e.cum - mn) / range) * (H - PAD * 2);
+                      return `${x.toFixed(1)},${y.toFixed(1)}`;
+                    }).join(" ");
+                    const zeroY = H - PAD - ((0 - mn) / range) * (H - PAD * 2);
+                    return (
+                      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+                        <line x1={PAD} y1={zeroY} x2={W - PAD} y2={zeroY} stroke="#1a2535" strokeWidth="0.5" strokeDasharray="2,2" />
+                        <polyline points={points} fill="none" stroke={btResult.stats.totalPnl >= 0 ? "#26a69a" : "#ef5350"} strokeWidth="1.5" />
+                        <text x={PAD + 2} y={10} fill="#4a5568" fontSize="8" fontFamily="monospace">{mx.toFixed(1)}%</text>
+                        <text x={PAD + 2} y={H - 2} fill="#4a5568" fontSize="8" fontFamily="monospace">{mn.toFixed(1)}%</text>
+                      </svg>
+                    );
+                  })()}
+                </Section>
+                <Section title={`最近 ${Math.min(10, btResult.trades.length)} 筆交易`} color="#f0e68c" defaultOpen={false}>
+                  {btResult.trades.slice(-10).reverse().map((t, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 0", borderBottom: "1px solid #111824", fontSize: 9, fontFamily: "monospace" }}>
+                      <span style={{ color: t.isLong ? "#26a69a" : "#ef5350", fontWeight: 700, minWidth: 28 }}>{t.isLong ? "多" : "空"}</span>
+                      <span style={{ color: "#4a5568", flex: 1 }}>{new Date(t.entryTime).toLocaleDateString()}</span>
+                      <span style={{ color: t.pnl > 0 ? "#26a69a" : "#ef5350", fontWeight: 700, minWidth: 52, textAlign: "right" }}>{t.pnl > 0 ? "+" : ""}{t.pnl.toFixed(2)}%</span>
+                      <span style={{ color: "#4a5568", minWidth: 56, textAlign: "right" }}>{t.exitReason}</span>
+                    </div>
+                  ))}
+                </Section>
+                <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
+                  <p style={{ color: "#787b86", marginBottom: 4 }}>回測說明：</p>
+                  <p>· 進場：SMC 訊號（做多/做空，信心 ≥ 30%）</p>
+                  <p>· 止損：1.5 × ATR；目標：2 × ATR（R/R 1.33）</p>
+                  <p>· 最多持有 30 根 K 棒（時間止損）</p>
+                  <p>· 過去績效不保證未來表現</p>
+                </div>
+              </>}
             </>}
 
             {sideTab === "jin10" && <>
