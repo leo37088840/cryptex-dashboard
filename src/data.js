@@ -1,5 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 // CRYPTEX data layer
+// 加密貨幣: Binance REST + WebSocket
+// 美股: Finnhub
+// 外匯/指數/商品: Twelve Data
+// 台股: FinMind
+// 金十快訊: jin10 公開端點（透過代理）
 // ════════════════════════════════════════════════════════════════════════════
 
 export const PROXY_URL = import.meta.env.VITE_PROXY_URL || "";
@@ -31,6 +36,7 @@ async function getText(url, { useProxy = false } = {}) {
   } catch { return null; }
 }
 
+// ─── Crypto: Binance + OKX + CoinGecko ───────────────────────────────────────
 export async function loadCrypto() {
   const merged = new Map();
   const add = (c) => {
@@ -69,6 +75,7 @@ export async function loadCrypto() {
   return Array.from(merged.values()).sort((a, b) => (b.volume || 0) - (a.volume || 0));
 }
 
+// ─── Universe definitions for each market ────────────────────────────────────
 export const UNIVERSE = {
   us: [
     ["AAPL","蘋果"],["MSFT","微軟"],["NVDA","輝達"],["TSLA","特斯拉"],["AMZN","亞馬遜"],
@@ -77,6 +84,11 @@ export const UNIVERSE = {
     ["DIS","迪士尼"],["BA","波音"],["JPM","摩根大通"],["V","Visa"],["MA","萬事達"],
     ["WMT","沃爾瑪"],["KO","可口可樂"],["MCD","麥當勞"],["NKE","耐吉"],["BABA","阿里巴巴"],
     ["TSM","台積電ADR"],["UBER","Uber"],["COIN","Coinbase"],["PLTR","Palantir"],["MSTR","Strategy"],
+    ["LLY","禮來"],["JNJ","嬌生"],["UNH","聯合健康"],["XOM","埃克森美孚"],["CVX","雪佛龍"],
+    ["PG","寶潔"],["HD","家得寶"],["COST","好市多"],["PEP","百事"],["BAC","美國銀行"],
+    ["CSCO","思科"],["TXN","德州儀器"],["IBM","IBM"],["GE","奇異"],["F","福特"],
+    ["GM","通用汽車"],["PYPL","PayPal"],["SHOP","Shopify"],["ARM","Arm"],["SMCI","美超微"],
+    ["DELL","戴爾"],["MU","美光"],["ASML","艾司摩爾"],["PDD","拼多多"],["JD","京東"],
   ],
   tw: [
     ["2330","台積電"],["2317","鴻海"],["2454","聯發科"],["2412","中華電"],["2308","台達電"],
@@ -98,6 +110,7 @@ export const UNIVERSE = {
   ],
 };
 
+// ─── Finnhub: US stocks ──────────────────────────────────────────────────────
 async function loadFinnhubQuote(symbol) {
   if (!FINNHUB_KEY) return null;
   const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_KEY}`;
@@ -106,8 +119,9 @@ async function loadFinnhubQuote(symbol) {
 
 async function loadUSStocks() {
   const out = [];
-  for (let i = 0; i < UNIVERSE.us.length; i += 10) {
-    const batch = UNIVERSE.us.slice(i, i + 10);
+  // Finnhub 免費版 60 次/分鐘。分批每 12 個、間隔 1.2 秒，避免觸發限制。
+  for (let i = 0; i < UNIVERSE.us.length; i += 12) {
+    const batch = UNIVERSE.us.slice(i, i + 12);
     const quotes = await Promise.all(batch.map(([sym]) => loadFinnhubQuote(sym)));
     batch.forEach(([sym, label], j) => {
       const q = quotes[j];
@@ -116,11 +130,14 @@ async function loadUSStocks() {
         out.push({ symbol: sym, name: sym, label, cat: "us", price: q.c, change, volume: 0, high: q.h, low: q.l, open: q.o });
       }
     });
+    if (i + 12 < UNIVERSE.us.length) await new Promise((r) => setTimeout(r, 1200));
   }
   return out;
 }
 
+// ─── Twelve Data: forex, indices, commodities ────────────────────────────────
 // Twelve Data 免費版一次只能查 1 個 symbol，且每分鐘限 8 次。
+// 故逐一查詢，每查 7 個就停一下，避免觸發限制。
 async function loadTwelveSingle(sym) {
   if (!TWELVEDATA_KEY) return null;
   const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}&apikey=${TWELVEDATA_KEY}`;
@@ -132,6 +149,7 @@ async function loadTwelveSingle(sym) {
 async function loadTwelveCategory(cat) {
   const defs = UNIVERSE[cat] || [];
   const out = [];
+  // 一次併發查 6 個（在每分鐘 8 次限制內），夠用
   for (let i = 0; i < defs.length; i += 6) {
     const batch = defs.slice(i, i + 6);
     const qs = await Promise.all(batch.map(([sym]) => loadTwelveSingle(sym)));
@@ -154,6 +172,7 @@ async function loadTwelveCategory(cat) {
   return out;
 }
 
+// ─── FinMind: Taiwan stocks ──────────────────────────────────────────────────
 async function loadFinMindQuote(symbol) {
   if (!FINMIND_TOKEN) return null;
   const today = new Date();
@@ -185,6 +204,7 @@ async function loadTWStocks() {
   return out;
 }
 
+// ─── Unified loader by category ──────────────────────────────────────────────
 export async function loadMarket(cat) {
   if (cat === "crypto") return loadCrypto();
   if (cat === "us") return loadUSStocks();
@@ -193,6 +213,7 @@ export async function loadMarket(cat) {
   return [];
 }
 
+// ═══════════ KLINES ════════════════════════════════════════════════════════════
 const BINANCE_TF = { "15m":"15m", "1H":"1h", "4H":"4h", "1D":"1d" };
 const TWELVE_TF = { "15m":"15min", "1H":"1h", "4H":"4h", "1D":"1day" };
 const FINNHUB_TF = { "15m":"15", "1H":"60", "4H":"240", "1D":"D" };
@@ -232,6 +253,7 @@ async function klinesFinnhub(item, tf) {
 
 async function klinesFinMind(item, tf) {
   if (!FINMIND_TOKEN) return null;
+  // FinMind 免費版只有日 K（TaiwanStockPrice），其他週期我們聚合
   const days = tf === "1D" ? 365 : tf === "4H" ? 90 : tf === "1H" ? 30 : 7;
   const start = new Date(Date.now() - days * 86400 * 1000);
   const ymd = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
@@ -253,6 +275,23 @@ export async function loadKlines(item, tf) {
   return null;
 }
 
+// ─── 多週期漲跌（今日/7天/30天/90天/180天/1年）用日 K 計算 ──────────────────
+export async function loadPeriodChanges(item) {
+  if (!item) return null;
+  const k = await loadKlines(item, "1D");
+  if (!k || k.length < 2) return null;
+  const last = k[k.length - 1].c;
+  const chg = (daysAgo) => {
+    const idx = k.length - 1 - daysAgo;
+    if (idx < 0) return null;
+    const base = k[idx].c;
+    return base ? ((last - base) / base) * 100 : null;
+  };
+  return { today: chg(1), d7: chg(7), d30: chg(30), d90: chg(90), d180: chg(180), y1: chg(365) };
+}
+
+// ═══════════ WebSocket for crypto (Binance) ═════════════════════════════════
+// onTick(price, symbol) — 用於即時更新左上價格和最新 K 棒
 export function subscribeCryptoTicker(binanceSymbol, onTick) {
   if (!binanceSymbol) return () => {};
   const sym = binanceSymbol.toLowerCase();
@@ -279,6 +318,7 @@ export function subscribeCryptoTicker(binanceSymbol, onTick) {
   return () => { closed = true; try { ws && ws.close(); } catch {} };
 }
 
+// ═══════════ INDICATORS ════════════════════════════════════════════════════════
 export function calcSMA(d, p) {
   return d.map((_, i) => (i < p - 1 ? null : d.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p));
 }
@@ -309,10 +349,12 @@ export function calcKDJ(h, lo, c, p = 9) {
     return { k, d, j: 3 * k - 2 * d };
   });
 }
+// ATR for volatility / stop sizing
 export function calcATR(h, l, c, p = 14) {
   const tr = h.map((_, i) => i === 0 ? h[i] - l[i] : Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
   return calcSMA(tr, p);
 }
+// ADX-ish trend strength (簡化版)
 export function calcADX(h, l, c, p = 14) {
   const tr = h.map((_, i) => i === 0 ? h[i] - l[i] : Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
   const plusDM = h.map((_, i) => i === 0 ? 0 : Math.max(h[i] - h[i - 1], 0));
@@ -326,6 +368,7 @@ export function calcADX(h, l, c, p = 14) {
   });
 }
 
+// ═══════════ SMC ENGINE ════════════════════════════════════════════════════════
 function findSwings(c, lb = 3) {
   const sh = [], sl = [];
   for (let i = lb; i < c.length - lb; i++) {
@@ -414,12 +457,17 @@ export async function analyzeSMCMulti(item) {
   return results;
 }
 
+// ═══════════ AI 多空分析（規則式）═════════════════════════════════════════════
+// 綜合：SMC 多時區共振 + 趨勢強度(ADX) + 動能 + 波動率(ATR) + 量能 + 確認指標
 export function aiAnalyze(item, candles, smc, smcMulti) {
   if (!candles || candles.length < 50 || !smc) return null;
   const closes = candles.map(c => c.c), highs = candles.map(c => c.h), lows = candles.map(c => c.l), vols = candles.map(c => c.v || 0);
   const n = closes.length - 1, price = closes[n];
+
   let bullScore = 0, bearScore = 0;
   const factors = [];
+
+  // 1) SMC 多時區共振
   const valid = (smcMulti || []).filter(m => m.result);
   const longs = valid.filter(m => m.result.signal.includes("做多")).length;
   const shorts = valid.filter(m => m.result.signal.includes("做空")).length;
@@ -428,11 +476,15 @@ export function aiAnalyze(item, candles, smc, smcMulti) {
   else if (longs > shorts) { bullScore += 1; factors.push({ k: "多時區共振", v: `${longs}多 / ${shorts}空，偏多`, side: "bull" }); }
   else if (shorts > longs) { bearScore += 1; factors.push({ k: "多時區共振", v: `${shorts}空 / ${longs}多，偏空`, side: "bear" }); }
   else { factors.push({ k: "多時區共振", v: "分歧", side: "neutral" }); }
+
+  // 2) SMC 主訊號
   if (smc.signal.includes("強力做多")) { bullScore += 2; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bull" }); }
   else if (smc.signal.includes("做多")) { bullScore += 1; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bull" }); }
   else if (smc.signal.includes("強力做空")) { bearScore += 2; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bear" }); }
   else if (smc.signal.includes("做空")) { bearScore += 1; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bear" }); }
   else factors.push({ k: "SMC 主訊號", v: "觀望", side: "neutral" });
+
+  // 3) 趨勢強度
   const adx = calcADX(highs, lows, closes);
   const adxNow = adx[n];
   if (adxNow != null) {
@@ -440,12 +492,16 @@ export function aiAnalyze(item, candles, smc, smcMulti) {
     else if (adxNow > 15) factors.push({ k: "趨勢強度", v: `中等 (ADX ${adxNow.toFixed(0)})`, side: "neutral" });
     else factors.push({ k: "趨勢強度", v: `盤整 (ADX ${adxNow.toFixed(0)})`, side: "neutral" });
   }
+
+  // 4) 動能（短期 vs 中期均線）
   const ma5 = calcSMA(closes, 5)[n], ma20 = calcSMA(closes, 20)[n], ma60 = calcSMA(closes, 60)[n];
   if (ma5 && ma20 && ma60) {
     if (ma5 > ma20 && ma20 > ma60) { bullScore += 2; factors.push({ k: "均線排列", v: "多頭排列 (5>20>60)", side: "bull" }); }
     else if (ma5 < ma20 && ma20 < ma60) { bearScore += 2; factors.push({ k: "均線排列", v: "空頭排列 (5<20<60)", side: "bear" }); }
     else factors.push({ k: "均線排列", v: "糾結", side: "neutral" });
   }
+
+  // 5) 量能配合
   const recentVol = vols.slice(-5).reduce((a, b) => a + b, 0) / 5;
   const baseVol = vols.slice(-20).reduce((a, b) => a + b, 0) / 20;
   if (baseVol > 0) {
@@ -454,10 +510,15 @@ export function aiAnalyze(item, candles, smc, smcMulti) {
     else if (ratio < 0.7) factors.push({ k: "量能", v: `縮量 (${ratio.toFixed(1)}x)`, side: "neutral" });
     else factors.push({ k: "量能", v: "正常", side: "neutral" });
   }
+
+  // 6) 波動率 (ATR) — 用於止損建議
   const atr = calcATR(highs, lows, closes);
   const atrNow = atr[n] || (price * 0.01);
+
+  // 算總分
   const totalScore = bullScore - bearScore;
   const conf = Math.min(95, Math.round((Math.abs(totalScore) / 7) * 100));
+
   let direction = "觀望", color = "#787b86", emoji = "⚖️";
   if (totalScore >= 5) { direction = "強烈做多"; color = "#26a69a"; emoji = "🚀"; }
   else if (totalScore >= 3) { direction = "做多"; color = "#26a69a"; emoji = "📈"; }
@@ -465,23 +526,32 @@ export function aiAnalyze(item, candles, smc, smcMulti) {
   else if (totalScore <= -3) { direction = "做空"; color = "#ef5350"; emoji = "📉"; }
   else if (totalScore >= 1) { direction = "偏多"; color = "#7fb284"; emoji = "↗️"; }
   else if (totalScore <= -1) { direction = "偏空"; color = "#d98890"; emoji = "↘️"; }
+
+  // 進場/止損/目標（基於 ATR）
   const isLong = totalScore > 0;
   const entry = price;
   const stop = isLong ? price - atrNow * 1.5 : price + atrNow * 1.5;
   const target1 = isLong ? price + atrNow * 2 : price - atrNow * 2;
   const target2 = isLong ? price + atrNow * 4 : price - atrNow * 4;
   const rr = Math.abs(target1 - entry) / Math.abs(entry - stop);
+
+  // 摘要文字
   const summary = totalScore === 0
     ? "目前訊號分歧或盤整，建議觀望等待更明確方向。"
     : `${emoji} 綜合判斷偏向 ${direction}，信心度 ${conf}%。主要依據：${factors.filter(f => f.side === (isLong ? "bull" : "bear")).map(f => f.k).join("、") || "多項技術訊號"}。`;
+
   return {
     direction, color, emoji, confidence: conf, score: totalScore,
     factors, summary,
-    plan: { entry, stop, target1, target2, rr: rr.toFixed(2), atr: atrNow, isLong },
+    plan: {
+      entry, stop, target1, target2, rr: rr.toFixed(2),
+      atr: atrNow, isLong,
+    },
     risk: "本分析為演算法綜合多項技術指標，僅供參考。實際交易請結合資金管理、風險控制與個人判斷。",
   };
 }
 
+// ═══════════ JIN10 FLASH ════════════════════════════════════════════════════════
 function extractJsonArray(txt) {
   if (!txt) return null;
   const start = txt.indexOf("[");
@@ -501,6 +571,7 @@ export async function loadJin10Flash() {
   }).filter((x) => x.text);
 }
 
+// 占位日曆（之後可換更穩來源；目前 Forex Factory 被 rate limited）
 export async function loadCalendar() {
   return null;
 }
