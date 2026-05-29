@@ -135,6 +135,40 @@ export function subscribeCryptoTicker(binanceSymbol, onTick) {
   return () => { closed = true; try { ws && ws.close(); } catch {} };
 }
 
+// 訂閱即時 K 線（每秒推送當前未收盤 K 棒）— 取代 15 秒輪詢
+export function subscribeCryptoKline(binanceSymbol, tf, onCandle) {
+  if (!binanceSymbol) return () => {};
+  const sym = binanceSymbol.toLowerCase();
+  const tfMap = { "15m": "15m", "1H": "1h", "4H": "4h", "1D": "1d" };
+  const intv = tfMap[tf] || "15m";
+  let ws = null, closed = false, retry = 0;
+  const connect = () => {
+    if (closed) return;
+    try {
+      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@kline_${intv}`);
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          const k = d.k;
+          if (!k) return;
+          onCandle({
+            t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v,
+            isClosed: !!k.x,
+          });
+        } catch {}
+      };
+      ws.onclose = () => {
+        if (closed) return;
+        retry = Math.min(retry + 1, 5);
+        setTimeout(connect, retry * 1000);
+      };
+      ws.onerror = () => { try { ws.close(); } catch {} };
+    } catch {}
+  };
+  connect();
+  return () => { closed = true; try { ws && ws.close(); } catch {} };
+}
+
 // ═══════════ INDICATORS ═════════════════════════════════════════════════════
 export function calcSMA(d, p) {
   return d.map((_, i) => (i < p - 1 ? null : d.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p));
@@ -270,6 +304,128 @@ export async function analyzeSMCMulti(item) {
     return { tf, result: k && k.length >= 40 ? analyzeSMC(k) : null };
   }));
   return results;
+}
+
+// ═══════════ 回測引擎 ═══════════════════════════════════════════════════════
+// 對歷史 K 線跑 SMC 策略，模擬每個訊號的交易結果，產出績效報告
+// opts: { atrMult: 止損 ATR 倍數, targetMult: 目標 ATR 倍數, maxBars: 最多持有 K 棒數 }
+export function backtest(candles, opts = {}) {
+  const { atrMult = 1.5, targetMult = 2, maxBars = 30, lookback = 50 } = opts;
+  if (!candles || candles.length < lookback + 20) return null;
+
+  const highs = candles.map((c) => c.h);
+  const lows = candles.map((c) => c.l);
+  const closes = candles.map((c) => c.c);
+  const atrs = calcATR(highs, lows, closes);
+
+  const trades = [];
+  let open = null;
+
+  for (let i = lookback; i < candles.length; i++) {
+    const cdl = candles[i];
+
+    // 檢查當前未結束的交易
+    if (open) {
+      let exited = false;
+      if (open.isLong) {
+        if (cdl.l <= open.stop) {
+          open.exit = open.stop; open.exitReason = "止損";
+          open.pnl = ((open.stop - open.entry) / open.entry) * 100;
+          exited = true;
+        } else if (cdl.h >= open.target) {
+          open.exit = open.target; open.exitReason = "目標達成";
+          open.pnl = ((open.target - open.entry) / open.entry) * 100;
+          exited = true;
+        }
+      } else {
+        if (cdl.h >= open.stop) {
+          open.exit = open.stop; open.exitReason = "止損";
+          open.pnl = ((open.entry - open.stop) / open.entry) * 100;
+          exited = true;
+        } else if (cdl.l <= open.target) {
+          open.exit = open.target; open.exitReason = "目標達成";
+          open.pnl = ((open.entry - open.target) / open.entry) * 100;
+          exited = true;
+        }
+      }
+      if (!exited && i - open.entryIdx >= maxBars) {
+        open.exit = cdl.c; open.exitReason = "時間止損";
+        open.pnl = open.isLong
+          ? ((cdl.c - open.entry) / open.entry) * 100
+          : ((open.entry - cdl.c) / open.entry) * 100;
+        exited = true;
+      }
+      if (exited) {
+        open.exitTime = cdl.t;
+        open.barsHeld = i - open.entryIdx;
+        trades.push(open);
+        open = null;
+      }
+    }
+
+    // 沒在交易中：跑 SMC 看是否進場
+    if (!open) {
+      const slice = candles.slice(0, i + 1);
+      const smc = analyzeSMC(slice);
+      if (!smc) continue;
+      const atr = atrs[i];
+      if (!atr) continue;
+      const isLong = smc.signal.includes("做多");
+      const isShort = smc.signal.includes("做空");
+      if (!isLong && !isShort) continue;
+      // 過濾低信心訊號
+      if (smc.confidence < 30) continue;
+      open = {
+        entryIdx: i,
+        entryTime: cdl.t,
+        entry: cdl.c,
+        isLong,
+        signal: smc.signal,
+        confidence: smc.confidence,
+        structure: smc.structure,
+        stop: isLong ? cdl.c - atr * atrMult : cdl.c + atr * atrMult,
+        target: isLong ? cdl.c + atr * targetMult : cdl.c - atr * targetMult,
+      };
+    }
+  }
+
+  // 統計
+  const wins = trades.filter((t) => t.pnl > 0);
+  const losses = trades.filter((t) => t.pnl <= 0);
+  const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
+  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : (totalWin > 0 ? 99 : 0);
+
+  // 累積績效曲線
+  let cum = 0;
+  const equity = trades.map((t) => { cum += t.pnl; return { t: t.exitTime, cum }; });
+
+  // 最大回撤
+  let peak = 0, maxDD = 0;
+  equity.forEach((e) => {
+    if (e.cum > peak) peak = e.cum;
+    if (e.cum - peak < maxDD) maxDD = e.cum - peak;
+  });
+
+  return {
+    trades,
+    stats: {
+      total: trades.length,
+      wins: wins.length,
+      losses: losses.length,
+      winRate,
+      totalPnl,
+      avgWin,
+      avgLoss,
+      profitFactor,
+      maxDD,
+    },
+    equity,
+  };
 }
 
 // ═══════════ 期貨 API (Binance fapi) ═══════════════════════════════════════
