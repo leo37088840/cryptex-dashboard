@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti, aiAnalyze,
   calcSMA, calcMACD, calcRSI, calcKDJ, UNIVERSE,
-  loadJin10Flash, loadCalendar, subscribeCryptoTicker,
+  loadJin10Flash, loadCalendar, subscribeCryptoTicker, loadPeriodChanges,
 } from "./data.js";
 
 const MA_COLORS = { 5: "#f0e68c", 10: "#87ceeb", 20: "#ff8c69", 60: "#da70d6" };
@@ -348,6 +348,7 @@ export default function App() {
   const [j10flash, setJ10flash] = useState(undefined);
   const [drawTool, setDrawTool] = useState("none");
   const [livePrice, setLivePrice] = useState(0);
+  const [periodChg, setPeriodChg] = useState(null);
   const lastSig = useRef(null);
 
   const filtered = useMemo(() => {
@@ -415,6 +416,14 @@ export default function App() {
   }, [selected, candles, smc, smcMulti]);
 
   useEffect(() => {
+    if (!selected) { setPeriodChg(null); return; }
+    let cancel = false;
+    setPeriodChg(null);
+    loadPeriodChanges(selected).then((r) => { if (!cancel) setPeriodChg(r); });
+    return () => { cancel = true; };
+  }, [selected]);
+
+  useEffect(() => {
     setLivePrice(0);
     if (!selected || selected.cat !== "crypto") return;
     const sym = selected.binanceSymbol || `${selected.name}USDT`;
@@ -455,6 +464,13 @@ export default function App() {
   const finalChange = selected?.cat === "crypto" ? change24h : (selected?.change ?? 0);
   const up = finalChange >= 0;
   const fmtPr = (v) => (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+  const fmtVol = (v) => {
+    if (!v || v <= 0) return "";
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
+    return String(Math.round(v));
+  };
 
   const drawKey = `${selected?.symbol || "x"}-${tf}`;
 
@@ -502,9 +518,9 @@ export default function App() {
         {renderCoinList(true)}
         <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
           {filtered.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
-            <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 1, minWidth: 78 }}>
+            <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
               <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
-              <span style={{ color: live.change >= 0 ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>{live.change >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+              <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
             </button>); })}
         </div>
       </div>}
@@ -515,9 +531,15 @@ export default function App() {
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
             {filtered.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
-              <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", flexDirection: "column", gap: 1, textAlign: "left" }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span><span style={{ color: live.change >= 0 ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>{live.change >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span></div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>${fmtPr(live.price)}</span>{coin.label && <span style={{ color: "#354050", fontSize: 8 }}>{(coin.label || "").slice(0, 8)}</span>}</div>
+              <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
+                  <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.label ? (coin.label).slice(0, 6) : ""}{fmtVol(live.volume) ? (coin.label ? " · " : "") + fmtVol(live.volume) : ""}</div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
+                  <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(live.price)}</span>
+                  <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+                </div>
               </button>); })}
           </div>
         </div>}
@@ -530,6 +552,14 @@ export default function App() {
             </div>
             {candles.length > 0 && (() => { const lc = candles[candles.length - 1]; return [["開", lc.o], ["高", lc.h, "#26a69a"], ["低", lc.l, "#ef5350"], ["收", lc.c]].map(([l, v, c]) => <div key={l}><div style={{ color: "#354050", fontSize: 9, fontFamily: "monospace" }}>{l}</div><div style={{ color: c || "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(v)}</div></div>); })()}
           </div>
+          {periodChg && <div style={{ background: "#131722", borderBottom: "1px solid #1e222d", padding: "4px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
+            {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([lbl, val]) => (
+              <div key={lbl} style={{ flex: 1, minWidth: 52, textAlign: "center", padding: "0 4px" }}>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{lbl}</div>
+                <div style={{ color: val == null ? "#4a5568" : val >= 0 ? "#26a69a" : "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 600 }}>{val == null ? "—" : (val >= 0 ? "+" : "") + val.toFixed(2) + "%"}</div>
+              </div>
+            ))}
+          </div>}
           <div style={{ background: "#131722", borderBottom: "1px solid #1e222d", padding: "5px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
             {INTERVALS.map((iv) => <button key={iv} onClick={() => setTf(iv)} style={{ background: tf === iv ? "#0f1e2e" : "transparent", border: `1px solid ${tf === iv ? "#58a6ff" : "transparent"}`, borderRadius: 4, color: tf === iv ? "#58a6ff" : "#4a5568", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>{iv}</button>)}
             <div style={{ width: 1, height: 14, background: "#1a2535" }} />
