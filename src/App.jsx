@@ -1,19 +1,15 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
-  loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti, aiAnalyze,
+  loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti, aiAnalyze, aiAnalyzeCryptoDeep,
   calcSMA, calcMACD, calcRSI, calcKDJ, UNIVERSE,
   loadJin10Flash, loadCalendar, subscribeCryptoTicker, loadPeriodChanges,
+  scanRecommendations, scanAnomalies,
 } from "./data.js";
 
 const MA_COLORS = { 5: "#f0e68c", 10: "#87ceeb", 20: "#ff8c69", 60: "#da70d6" };
 const INTERVALS = ["15m", "1H", "4H", "1D"];
 const MARKET_CATS = [
   { id: "crypto", label: "加密貨幣" },
-  { id: "us", label: "美股" },
-  { id: "tw", label: "台股" },
-  { id: "forex", label: "外匯" },
-  { id: "index", label: "指數" },
-  { id: "commodity", label: "商品" },
 ];
 const TV = { bg: "#131722", grid: "#1e222d", axisText: "#787b86", up: "#26a69a", down: "#ef5350", crosshair: "#758696", labelBg: "#363a45" };
 
@@ -27,6 +23,9 @@ function useIsMobile() {
   return m;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// DRAWING TOOLS storage
+// ──────────────────────────────────────────────────────────────────────────────
 function loadDrawings(key) {
   try { const s = localStorage.getItem(`cryptex-draw:${key}`); return s ? JSON.parse(s) : []; } catch { return []; }
 }
@@ -34,6 +33,9 @@ function saveDrawings(key, list) {
   try { localStorage.setItem(`cryptex-draw:${key}`, JSON.stringify(list)); } catch {}
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// CHART
+// ──────────────────────────────────────────────────────────────────────────────
 function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawKey }) {
   const ref = useRef(null);
   const dprRef = useRef(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
@@ -42,8 +44,9 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
   const geomRef = useRef(null);
   const dragRef = useRef(null);
   const [drawings, setDrawings] = useState(() => loadDrawings(drawKey));
-  const [drawingNow, setDrawingNow] = useState(null);
+  const [drawingNow, setDrawingNow] = useState(null); // {tool, p1, p2}
 
+  // 換 key 時重載
   useEffect(() => { setDrawings(loadDrawings(drawKey)); setDrawingNow(null); }, [drawKey]);
 
   const xy2data = (x, y, g) => {
@@ -56,6 +59,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
   };
   const data2xy = (t, p, g) => {
     if (!g) return null;
+    // 用時間找最近 candle index
     let bestI = 0, best = Infinity;
     for (let i = 0; i < g.candles.length; i++) {
       const d = Math.abs(g.candles[i].t - t);
@@ -127,6 +131,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
     vis.forEach((c, i) => { ctx.fillStyle = c.c >= c.o ? TV.up + "55" : TV.down + "55"; const top = yV(c.v); ctx.fillRect(xOf(i) - cw / 2, top, cw, Math.max(1, (PRICE_H + PAD_TOP + 4 + VOL_H) - top)); });
     ctx.fillStyle = TV.axisText; ctx.font = "9px Arial"; ctx.textAlign = "left"; ctx.fillText("Vol", PAD_L + 4, PRICE_H + PAD_TOP + 12);
 
+    // Sub chart
     if (subChart === "MACD") {
       const { macd, signal, hist } = calcMACD(allCloses);
       const vm = macd.slice(start, end), vs = signal.slice(start, end), vh = hist.slice(start, end);
@@ -155,6 +160,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
     ctx.font = "10px Arial"; ctx.textAlign = "center"; ctx.fillStyle = TV.axisText;
     for (let i = 0; i < vn; i += stepV) { const d = new Date(vis[i].t + tzOffset * 60000); const hh = String(d.getUTCHours()).padStart(2, "0"), mm = String(d.getUTCMinutes()).padStart(2, "0"), dd = String(d.getUTCDate()).padStart(2, "0"), mo = String(d.getUTCMonth() + 1).padStart(2, "0"); ctx.fillText(`${mo}/${dd} ${hh}:${mm}`, xOf(i), H - PAD_BOT + 14); }
 
+    // 即時價（用 livePrice 優先）
     const lcOrig = candles[candles.length - 1];
     const lastPrice = livePrice && livePrice > 0 ? livePrice : lcOrig.c;
     const lastUp = lastPrice >= lcOrig.o;
@@ -163,6 +169,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
       ctx.fillStyle = lastUp ? TV.up : TV.down; ctx.fillRect(PAD_L + chartW, y - 9, PAD_R, 18); ctx.fillStyle = "#fff"; ctx.font = "bold 10px Arial"; ctx.textAlign = "left"; ctx.fillText(fmtP(lastPrice), PAD_L + chartW + 5, y + 3);
     }
 
+    // 繪圖：已存的 + 正在拖的
     const allShapes = [...drawings];
     if (drawingNow && drawingNow.p1 && drawingNow.p2) allShapes.push(drawingNow);
     allShapes.forEach((sh) => {
@@ -182,6 +189,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
       }
     });
 
+    // 十字準星
     if (hover && hover.x >= PAD_L && hover.x <= PAD_L + chartW && hover.y >= PAD_TOP && hover.y <= H - PAD_BOT) {
       ctx.strokeStyle = TV.crosshair; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
       const snapX = xOf(Math.round((hover.x - PAD_L) / slotW - 0.5));
@@ -191,6 +199,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
       if (hover.y <= PAD_TOP + PRICE_H) { ctx.fillStyle = TV.labelBg; ctx.fillRect(PAD_L + chartW, hover.y - 9, PAD_R, 18); ctx.fillStyle = "#fff"; ctx.font = "10px Arial"; ctx.textAlign = "left"; ctx.fillText(fmtP(hp), PAD_L + chartW + 5, hover.y + 3); }
     }
 
+    // OHLC top label
     const lc2 = hover && hover.idx != null && candles[hover.idx] ? candles[hover.idx] : lcOrig;
     const lcUp = lc2.c >= lc2.o;
     ctx.font = "10px Arial"; ctx.textAlign = "left"; let lx = PAD_L + 4;
@@ -240,6 +249,7 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
   };
   const onPointerUp = () => {
     if (drawingNow) {
+      // 完成繪圖時：太短的線視為點，丟棄
       const a = drawingNow.p1, b = drawingNow.p2;
       const tooSmall = Math.abs(b.t - a.t) < 1 && Math.abs(b.p - a.p) < 1e-9;
       if (!tooSmall) {
@@ -259,14 +269,17 @@ function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawK
     });
   };
 
+  // 暴露給外層的清除（透過 effect 監聽 drawTool === "clear"）
   useEffect(() => {
-    if (drawTool === "clear") { setDrawings([]); saveDrawings(drawKey, []); }
+    if (drawTool === "clear") {
+      setDrawings([]); saveDrawings(drawKey, []);
+    }
   }, [drawTool, drawKey]);
 
   return (
     <canvas
       ref={ref}
-      style={{ width: "100%", height: "100%", display: "block", minHeight: 300, cursor: "crosshair", touchAction: "none" }}
+      style={{ width: "100%", height: "100%", display: "block", minHeight: 300, cursor: drawTool && drawTool !== "none" ? "crosshair" : "crosshair", touchAction: "none" }}
       onMouseMove={(e) => onPointerMove(e.clientX, e.clientY)}
       onMouseLeave={() => { setHover(null); onPointerUp(); }}
       onMouseDown={(e) => onPointerDown(e.clientX, e.clientY)}
@@ -316,6 +329,9 @@ function fmtFeedTime(t) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// 搜尋輸入：用 React 受控但避免每次外部 props 變化都重渲染導致鍵盤跳掉
+// ──────────────────────────────────────────────────────────────────────────────
 const SearchInput = ({ value, onChange }) => {
   return (
     <input
@@ -327,6 +343,9 @@ const SearchInput = ({ value, onChange }) => {
   );
 };
 
+// ──────────────────────────────────────────────────────────────────────────────
+// APP
+// ──────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
@@ -349,14 +368,26 @@ export default function App() {
   const [drawTool, setDrawTool] = useState("none");
   const [livePrice, setLivePrice] = useState(0);
   const [periodChg, setPeriodChg] = useState(null);
+  const [recs, setRecs] = useState(null);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsTs, setRecsTs] = useState(0);
+  const [alerts, setAlerts] = useState([]);
+  const [aiDeep, setAiDeep] = useState(null);
+  const [aiDeepLoading, setAiDeepLoading] = useState(false);
+  const [listLimit, setListLimit] = useState(50);
   const lastSig = useRef(null);
+  const lastWsTs = useRef(0);
 
+  // 搜尋過濾用 useMemo（避免無謂 re-render 導致 input 重建）
   const filtered = useMemo(() => {
     if (!search) return coins;
     const q = search.toUpperCase();
     return coins.filter((c) => c.name.toUpperCase().includes(q) || (c.symbol || "").toUpperCase().includes(q) || (c.label || "").toUpperCase().includes(q));
   }, [search, coins]);
+  // 性能：未搜尋時只顯示前 listLimit 個，避免渲染上百個項目造成卡頓
+  const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
+  // 載入市場列表（有搜尋時暫停輪詢，避免鍵盤被收）
   useEffect(() => {
     let cancel = false;
     async function run() {
@@ -367,11 +398,12 @@ export default function App() {
       setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
     }
     run();
-    if (search) return () => { cancel = true; };
+    if (search) return () => { cancel = true; }; // 搜尋中不輪詢
     const iv = setInterval(run, 30000);
     return () => { cancel = true; clearInterval(iv); };
   }, [category, search]);
 
+  // 載入金十快訊
   useEffect(() => {
     let cancel = false;
     async function run() { const r = await loadJin10Flash(); if (!cancel) setJ10flash(r); }
@@ -379,13 +411,16 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, []);
 
+  // 載入 K 線
   useEffect(() => {
     if (!selected) return; let cancel = false;
+    setCandles([]); // 清舊資料，避免切換時閃舊圖
     async function run() { const k = await loadKlines(selected, tf); if (!cancel && k && k.length) setCandles(k); }
     run(); const iv = setInterval(run, 15000);
     return () => { cancel = true; clearInterval(iv); };
   }, [selected, tf]);
 
+  // SMC 主訊號
   useEffect(() => {
     if (candles.length < 40 || !selected) { setSmc(null); return; }
     const r = analyzeSMC(candles); setSmc(r);
@@ -404,17 +439,20 @@ export default function App() {
     }
   }, [candles, selected, notifOn]);
 
+  // SMC 多時區
   useEffect(() => {
     if (!selected) return; let cancel = false;
     analyzeSMCMulti(selected).then((r) => { if (!cancel) setSmcMulti(r); });
     return () => { cancel = true; };
   }, [selected]);
 
+  // AI 分析
   useEffect(() => {
     if (!selected || !candles.length || !smc) { setAI(null); return; }
     setAI(aiAnalyze(selected, candles, smc, smcMulti));
   }, [selected, candles, smc, smcMulti]);
 
+  // 多週期漲跌（今日/7天/30天/90天/180天/1年）
   useEffect(() => {
     if (!selected) { setPeriodChg(null); return; }
     let cancel = false;
@@ -423,12 +461,17 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
+  // 加密貨幣 WebSocket 即時推送（節流 150ms 避免過度 re-render）
   useEffect(() => {
     setLivePrice(0);
     if (!selected || selected.cat !== "crypto") return;
     const sym = selected.binanceSymbol || `${selected.name}USDT`;
     const off = subscribeCryptoTicker(sym, (p) => {
+      const now = Date.now();
+      if (now - lastWsTs.current < 150) return;
+      lastWsTs.current = now;
       setLivePrice(p);
+      // 同步更新最後一根 K 棒，讓 K 線即時跟著動
       setCandles((cs) => {
         if (!cs || !cs.length) return cs;
         const copy = cs.slice();
@@ -443,6 +486,57 @@ export default function App() {
     return () => off();
   }, [selected]);
 
+  // 多空推薦掃描（切到「推薦」分頁時觸發，5 分鐘內不重掃）
+  const coinsLoaded = coins.length > 0;
+  useEffect(() => {
+    if (sideTab !== "recs" || !coinsLoaded) return;
+    if (recs && Date.now() - recsTs < 5 * 60 * 1000) return;
+    let cancel = false;
+    setRecsLoading(true);
+    scanRecommendations(coins, 200).then((r) => {
+      if (cancel) return;
+      setRecs(r); setRecsTs(Date.now()); setRecsLoading(false);
+    }).catch(() => { if (!cancel) setRecsLoading(false); });
+    return () => { cancel = true; };
+  }, [sideTab, coinsLoaded, recsTs]);
+
+  // 持倉異常警報（每 3 分鐘掃前 200 大幣）
+  useEffect(() => {
+    if (!coinsLoaded) return;
+    let cancel = false;
+    async function scan() {
+      if (cancel) return;
+      try {
+        const a = await scanAnomalies(coins, 200);
+        if (cancel) return;
+        // 合併新警報到舊的（去重以 symbol+type）
+        setAlerts((prev) => {
+          const map = new Map();
+          [...a, ...prev].forEach((x) => {
+            const key = `${x.symbol}-${x.type}`;
+            const ex = map.get(key);
+            if (!ex || x.ts > ex.ts) map.set(key, x);
+          });
+          return Array.from(map.values()).sort((x, y) => y.ts - x.ts).slice(0, 50);
+        });
+      } catch {}
+    }
+    scan();
+    const iv = setInterval(scan, 3 * 60 * 1000);
+    return () => { cancel = true; clearInterval(iv); };
+  }, [coinsLoaded]);
+
+  // AI 深度分析（切到 AI 分頁時抓期貨資金面）
+  useEffect(() => {
+    if (sideTab !== "ai" || !selected || !candles.length || !smc) { return; }
+    let cancel = false;
+    setAiDeepLoading(true);
+    aiAnalyzeCryptoDeep(selected, candles, smc, smcMulti).then((r) => {
+      if (!cancel) { setAiDeep(r); setAiDeepLoading(false); }
+    }).catch(() => { if (!cancel) setAiDeepLoading(false); });
+    return () => { cancel = true; };
+  }, [sideTab, selected, smc, smcMulti]);
+
   async function enableNotif() {
     if (typeof Notification === "undefined") { setNotifOn(true); return; }
     try { const p = await Notification.requestPermission(); setNotifOn(true); if (p === "granted") new Notification("✅ 通知已開啟", { body: "SMC 多空訊號將即時通知你" }); } catch { setNotifOn(true); }
@@ -455,11 +549,15 @@ export default function App() {
     return { rsi: rsi[n], macd: macd[n], signal: signal[n], hist: hist[n], kdj: kdj[n], ma5: calcSMA(closes, 5)[n], ma10: calcSMA(closes, 10)[n], ma20: calcSMA(closes, 20)[n], ma60: calcSMA(closes, 60)[n], curVol: vols[n], avgVol: vols.slice(-20).reduce((a, b) => a + b, 0) / 20 };
   })();
 
+  // 顯示價格：crypto 用 WS livePrice，其他用 K 線最後 close（保證圖價同步）
   const displayPrice = (() => {
     if (selected?.cat === "crypto" && livePrice > 0) return livePrice;
     if (candles.length) return candles[candles.length - 1].c;
     return selected?.price || 0;
   })();
+  const refPrice = selected ? (selected.cat === "crypto" ? (coins.find((c) => c.symbol === selected.symbol)?.price || selected.price) : (candles[0]?.c || selected.price)) : 0;
+  const change = refPrice > 0 ? ((displayPrice - refPrice) / refPrice) * 100 : (selected?.change || 0);
+  // 對 crypto 用 24hr change
   const change24h = selected ? (coins.find((c) => c.symbol === selected.symbol)?.change ?? selected.change ?? 0) : 0;
   const finalChange = selected?.cat === "crypto" ? change24h : (selected?.change ?? 0);
   const up = finalChange >= 0;
@@ -517,7 +615,7 @@ export default function App() {
       {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
         {renderCoinList(true)}
         <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
-          {filtered.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
+          {visibleList.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
             <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
               <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
               <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
@@ -530,7 +628,7 @@ export default function App() {
           {renderCoinList(false)}
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
-            {filtered.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
+            {visibleList.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
               <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
@@ -541,6 +639,7 @@ export default function App() {
                   <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
                 </div>
               </button>); })}
+            {!search && filtered.length > visibleList.length && <button onClick={() => setListLimit((l) => l + 50)} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", color: "#58a6ff", padding: "8px", fontSize: 10, fontFamily: "monospace", cursor: "pointer" }}>載入更多 ({filtered.length - visibleList.length} 個)</button>}
           </div>
         </div>}
 
@@ -580,7 +679,7 @@ export default function App() {
 
         {(!isMobile || mobileView === "panel") && <div style={{ width: isMobile ? "100%" : 300, background: "#080d14", borderLeft: isMobile ? "none" : "1px solid #1a2535", display: "flex", flexDirection: "column", overflow: "hidden", flex: isMobile ? 1 : "none", minHeight: 0 }}>
           <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto" }}>
-            {[["indicators", "指標"], ["smc", "SMC"], ["ai", "AI 分析"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 56, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>)}
+            {[["indicators", "指標"], ["smc", "SMC"], ["ai", "AI 分析"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 56, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>)}
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 8px" }}>
             {sideTab === "indicators" && indData && <>
@@ -639,29 +738,133 @@ export default function App() {
             </>}
 
             {sideTab === "ai" && <>
-              {ai ? <>
-                <div style={{ background: `${ai.color}14`, border: `1px solid ${ai.color}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
-                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>AI 多空綜合 · {selected?.symbol}</div>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: ai.color, fontFamily: "monospace" }}>{ai.emoji} {ai.direction}</div>
-                  <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${ai.confidence}%`, height: "100%", background: ai.color }} /></div>
-                  <div style={{ color: ai.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {ai.confidence}%</div>
+              {(() => {
+                // 優先顯示 aiDeep（含期貨資料），沒有則用基本 ai
+                const a = aiDeep || ai;
+                if (!a) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在計算 AI 綜合分析...</div>;
+                const x = aiDeep?.extra;
+                return <>
+                  <div style={{ background: `${a.color}14`, border: `1px solid ${a.color}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
+                    <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>AI 深度分析 · {selected?.symbol} {aiDeepLoading && <span style={{ color: "#f0b90b" }}>· 載入期貨資料中...</span>}</div>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: a.color, fontFamily: "monospace" }}>{a.emoji} {a.direction}</div>
+                    <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${a.confidence}%`, height: "100%", background: a.color }} /></div>
+                    <div style={{ color: a.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {a.confidence}% · 分數 {a.score > 0 ? "+" : ""}{a.score}</div>
+                  </div>
+                  <Section title="AI 摘要" color={a.color}>
+                    <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.7 }}>{a.summary}</div>
+                  </Section>
+                  <Section title="交易計畫建議" color="#58a6ff" badge={`R/R ${a.plan.rr}`}>
+                    <IndRow label="方向" value={a.plan.isLong ? "做多" : "做空"} color={a.plan.isLong ? "#26a69a" : "#ef5350"} />
+                    <IndRow label="進場參考" value={fmtPr(a.plan.entry)} />
+                    <IndRow label="止損" value={fmtPr(a.plan.stop)} color="#ef5350" />
+                    <IndRow label="目標 1 (2R)" value={fmtPr(a.plan.target1)} color="#26a69a" />
+                    <IndRow label="目標 2 (4R)" value={fmtPr(a.plan.target2)} color="#26a69a" />
+                    <IndRow label="ATR (波動)" value={fmtPr(a.plan.atr)} color="#f0e68c" />
+                  </Section>
+                  {x && x.funding && <Section title="期貨資金面" color="#f0b90b" badge="Binance Futures">
+                    <IndRow label="資金費率" value={`${(x.funding.funding * 100).toFixed(4)}%`} color={x.funding.funding > 0.0005 ? "#ef5350" : x.funding.funding < -0.0002 ? "#26a69a" : "#c9d1d9"} />
+                    <IndRow label="標記價" value={fmtPr(x.funding.markPrice)} />
+                    {x.oi && <IndRow label="當前 OI" value={fmtVol(x.oi.oi) + " 張"} />}
+                    {x.oiChg != null && <IndRow label="OI 1H 變化" value={`${x.oiChg > 0 ? "+" : ""}${x.oiChg.toFixed(2)}%`} color={x.oiChg > 0 ? "#26a69a" : "#ef5350"} />}
+                  </Section>}
+                  {x && (x.globalLS || x.topLS) && <Section title="多空情緒" color="#a78bfa" badge="散戶 vs 大戶">
+                    {x.globalLS && <>
+                      <IndRow label="散戶多空比" value={x.globalLS.ratio.toFixed(2)} color={x.globalLS.ratio > 1.3 ? "#ef5350" : x.globalLS.ratio < 0.8 ? "#26a69a" : "#c9d1d9"} />
+                      <IndRow label="散戶多/空" value={`${x.globalLS.longPct.toFixed(0)}% / ${x.globalLS.shortPct.toFixed(0)}%`} />
+                    </>}
+                    {x.topLS && <>
+                      <IndRow label="大戶多空比" value={x.topLS.ratio.toFixed(2)} color={x.topLS.ratio > 1.2 ? "#26a69a" : x.topLS.ratio < 0.85 ? "#ef5350" : "#c9d1d9"} />
+                      <IndRow label="大戶多/空" value={`${x.topLS.longPct.toFixed(0)}% / ${x.topLS.shortPct.toFixed(0)}%`} />
+                    </>}
+                  </Section>}
+                  {x && x.taker && <Section title="Taker CVD 資金流向" color="#58a6ff" badge="近30分">
+                    <IndRow label="主動買賣比" value={x.taker.ratio.toFixed(2)} color={x.taker.ratio > 1.1 ? "#26a69a" : x.taker.ratio < 0.9 ? "#ef5350" : "#c9d1d9"} />
+                    <IndRow label="趨勢" value={x.taker.trend} color={x.taker.cvdRecent > 0 ? "#26a69a" : x.taker.cvdRecent < 0 ? "#ef5350" : "#c9d1d9"} />
+                    <IndRow label="CVD 累積" value={fmtVol(Math.abs(x.taker.cvdRecent))} color={x.taker.cvdRecent > 0 ? "#26a69a" : "#ef5350"} />
+                  </Section>}
+                  {x && x.rsBTC && selected?.name !== "BTC" && <Section title="相對強弱 vs BTC" color="#ffb300" badge="24h">
+                    <IndRow label={`${selected?.name} 24h`} value={`${x.rsBTC.coinChg > 0 ? "+" : ""}${x.rsBTC.coinChg.toFixed(2)}%`} color={x.rsBTC.coinChg > 0 ? "#26a69a" : "#ef5350"} />
+                    <IndRow label="BTC 24h" value={`${x.rsBTC.btcChg > 0 ? "+" : ""}${x.rsBTC.btcChg.toFixed(2)}%`} />
+                    <IndRow label="超額表現" value={`${x.rsBTC.rs > 0 ? "+" : ""}${x.rsBTC.rs.toFixed(2)}% (${x.rsBTC.label})`} color={x.rsBTC.rs > 2 ? "#26a69a" : x.rsBTC.rs < -2 ? "#ef5350" : "#c9d1d9"} />
+                  </Section>}
+                  <Section title="分析因子明細" color="#a78bfa" defaultOpen={false}>
+                    {a.factors.map((f, i) => <IndRow key={i} label={f.k} value={f.v} color={f.side === "bull" ? "#26a69a" : f.side === "bear" ? "#ef5350" : "#c9d1d9"} />)}
+                  </Section>
+                  <div style={{ background: "#130a0a", border: "1px solid #2a1010", borderRadius: 8, padding: 10 }}><div style={{ color: "#5a2020", fontSize: 9, lineHeight: 1.6 }}>⚠️ {a.risk}</div></div>
+                </>;
+              })()}
+            </>}
+
+            {sideTab === "recs" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>掃前 200 大幣 · SMC 評分</div>
                 </div>
-                <Section title="AI 摘要" color={ai.color}>
-                  <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.7 }}>{ai.summary}</div>
+                <button onClick={() => setRecsTs(0)} disabled={recsLoading} style={{ background: recsLoading ? "#1a2535" : "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: recsLoading ? 0.5 : 1 }}>{recsLoading ? "掃描中..." : "↻ 刷新"}</button>
+              </div>
+              {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 10-15 秒...</div>}
+              {recs && <>
+                <Section title={`🟢 適合做多 (${recs.longs.length})`} color="#26a69a">
+                  {recs.longs.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做多訊號</div>}
+                  {recs.longs.map((r) => (
+                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                      <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
+                      <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
+                      <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
+                    </button>
+                  ))}
                 </Section>
-                <Section title="交易計畫建議" color="#58a6ff" badge={`R/R ${ai.plan.rr}`}>
-                  <IndRow label="方向" value={ai.plan.isLong ? "做多" : "做空"} color={ai.plan.isLong ? "#26a69a" : "#ef5350"} />
-                  <IndRow label="進場參考" value={fmtPr(ai.plan.entry)} />
-                  <IndRow label="止損" value={fmtPr(ai.plan.stop)} color="#ef5350" />
-                  <IndRow label="目標 1 (2R)" value={fmtPr(ai.plan.target1)} color="#26a69a" />
-                  <IndRow label="目標 2 (4R)" value={fmtPr(ai.plan.target2)} color="#26a69a" />
-                  <IndRow label="ATR (波動)" value={fmtPr(ai.plan.atr)} color="#f0e68c" />
+                <Section title={`🔴 適合做空 (${recs.shorts.length})`} color="#ef5350">
+                  {recs.shorts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做空訊號</div>}
+                  {recs.shorts.map((r) => (
+                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                      <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
+                      <span style={{ color: "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
+                      <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
+                    </button>
+                  ))}
                 </Section>
-                <Section title="分析因子" color="#a78bfa">
-                  {ai.factors.map((f, i) => <IndRow key={i} label={f.k} value={f.v} color={f.side === "bull" ? "#26a69a" : f.side === "bear" ? "#ef5350" : "#c9d1d9"} />)}
-                </Section>
-                <div style={{ background: "#130a0a", border: "1px solid #2a1010", borderRadius: 8, padding: 10 }}><div style={{ color: "#5a2020", fontSize: 9, lineHeight: 1.6 }}>⚠️ {ai.risk}</div></div>
-              </> : <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在計算 AI 綜合分析...</div>}
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>已掃 {recs.scanned} / {recs.total} 幣 · {new Date(recsTs).toLocaleTimeString()}</div>
+              </>}
+            </>}
+
+            {sideTab === "alerts" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
+                <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘掃前 200 大幣 OI 變化</div>
+              </div>
+              <Section title={`警報事件 (${alerts.length})`} color="#f0b90b" badge="即時">
+                {alerts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>目前無異常，每 3 分鐘自動掃描...</div>}
+                {alerts.map((al, i) => (
+                  <button key={`${al.symbol}-${al.ts}-${i}`} onClick={() => { const c = coins.find((x) => x.symbol === al.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${al.color}44`, borderLeft: `3px solid ${al.color}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                        <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{al.name}</span>
+                        <span style={{ color: al.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{al.type}</span>
+                      </div>
+                      <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>
+                        OI {al.oiChgPct > 0 ? "+" : ""}{al.oiChgPct.toFixed(2)}% · 24h 價 {al.change > 0 ? "+" : ""}{al.change.toFixed(2)}% · {new Date(al.ts).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </Section>
+              <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
+                <p style={{ color: "#787b86", marginBottom: 4 }}>判讀說明：</p>
+                <p>· <span style={{ color: "#26a69a" }}>多頭觸發</span>：OI 暴增 + 價漲，買單建倉</p>
+                <p>· <span style={{ color: "#ef5350" }}>空頭觸發</span>：OI 暴增 + 價跌，賣單建倉</p>
+                <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌，可能誘導空單進場</p>
+                <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升，多頭已減倉但漲不停</p>
+              </div>
             </>}
 
             {sideTab === "jin10" && <>
@@ -701,3 +904,4 @@ export default function App() {
     </div>
   );
 }
+
