@@ -358,5 +358,191 @@ export default function App() {
           </div>
 
           {periodChg && <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
-            {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([l
+            {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([lbl, val]) => (
+              <div key={lbl} style={{ flex: 1, minWidth: 52, textAlign: "center", padding: "0 4px" }}>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{lbl}</div>
+                <div style={{ color: val == null ? "#4a5568" : val >= 0 ? "#26a69a" : "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 600 }}>{val == null ? "—" : (val >= 0 ? "+" : "") + val.toFixed(2) + "%"}</div>
+              </div>
+            ))}
+          </div>}
+
+          <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "6px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>分析時間框架:</span>
+            {INTERVALS.map((iv) => (
+              <button key={iv} onClick={() => setTf(iv)} style={{ background: tf === iv ? "#0f1e2e" : "transparent", border: `1px solid ${tf === iv ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: tf === iv ? "#58a6ff" : "#8b949e", padding: "3px 10px", fontSize: 10, fontFamily: "monospace" }}>{iv}</button>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto", background: "#080d14" }}>
+            {[["smc", "SMC"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
+              <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>
+            ))}
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+            {sideTab === "smc" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
+                <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{notifOn ? "✓ 已開啟" : "開啟通知"}</button>
+              </div>
+              {smc ? <>
+                <div style={{ background: `${smc.color}14`, border: `1px solid ${smc.color}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
+                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>SMC 綜合訊號 · {selected?.symbol} · {tf}</div>
+                  <div style={{ color: smc.color, fontSize: 26, fontWeight: 800, fontFamily: "monospace", letterSpacing: 1 }}>{smc.signal}</div>
+                  <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${smc.confidence}%`, height: "100%", background: smc.color }} /></div>
+                  <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {smc.confidence}%</div>
+                </div>
+                <Section title="多時區 SMC 結構" color="#26a69a" badge="MTF">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {smcMulti.map(({ tf: t, result: r }) => {
+                      const sig = r ? r.signal : "資料不足";
+                      const col = r ? r.color : "#4a5568";
+                      return (
+                        <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", background: "#0d1520", borderRadius: 6, border: `1px solid ${r ? col + "44" : "#1a2535"}` }}>
+                          <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, width: 36 }}>{t}</span>
+                          <span style={{ color: col, fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 64 }}>{sig}</span>
+                          {r && <><span style={{ flex: 1, color: "#4a5568", fontSize: 9, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.structure}</span><span style={{ color: col, fontSize: 9, fontFamily: "monospace" }}>{r.confidence}%</span></>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Section>
+                <Section title="市場結構" color="#58a6ff">
+                  <IndRow label="當前結構" value={smc.structure} color={smc.structure.includes("上升") ? "#26a69a" : smc.structure.includes("下降") ? "#ef5350" : "#c9d1d9"} />
+                  <IndRow label="流動性掃單" value={smc.sweep || "無"} color={smc.sweep ? "#f0e68c" : "#4a5568"} />
+                  <IndRow label="FVG 失衡" value={smc.fvg ? (smc.fvg.type === "bull" ? "多頭缺口" : "空頭缺口") : "無"} color={smc.fvg ? (smc.fvg.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
+                  <IndRow label="訂單塊 OB" value={smc.ob ? (smc.ob.type === "bull" ? "多頭OB" : "空頭OB") : "無"} color={smc.ob ? (smc.ob.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
+                </Section>
+                <Section title="判斷依據" color="#f0e68c" defaultOpen={false}>
+                  {smc.reasons.length ? smc.reasons.map((r, i) => <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}><span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}</div>) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號，建議觀望。</div>}
+                </Section>
+              </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
+            </>}
+
+            {sideTab === "indicators" && indData && <>
+              <Section title="RSI (14)" color="#a78bfa">
+                <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
+                <IndRow label="區間狀態" value={indData.rsi > 70 ? "超買 ⚠️" : indData.rsi < 30 ? "超賣 🟢" : "中性"} />
+                <div style={{ marginTop: 6, height: 3, borderRadius: 2, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${Math.min(100, indData.rsi || 0)}%`, height: "100%", background: indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#a78bfa" }} /></div>
+              </Section>
+              <Section title="MACD (12,26,9)" color="#2962ff">
+                <IndRow label="MACD" value={indData.macd?.toFixed(4)} />
+                <IndRow label="Signal" value={indData.signal?.toFixed(4)} />
+                <IndRow label="Histogram" value={indData.hist?.toFixed(4)} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
+                <IndRow label="趨勢" value={(indData.hist || 0) > 0 ? "多頭 ↑" : "空頭 ↓"} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
+              </Section>
+              <Section title="KDJ (9,3,3)" color="#ffb300">
+                <IndRow label="K" value={indData.kdj?.k?.toFixed(2)} color="#ffb300" />
+                <IndRow label="D" value={indData.kdj?.d?.toFixed(2)} color="#2962ff" />
+                <IndRow label="J" value={indData.kdj?.j?.toFixed(2)} color="#e040fb" />
+                <IndRow label="信號" value={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "金叉 🟢" : "死叉 🔴"} color={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "#26a69a" : "#ef5350"} />
+              </Section>
+              <Section title="移動平均線 MA" color="#f0e68c">
+                {[[5, "#f0e68c"], [10, "#87ceeb"], [20, "#ff8c69"], [60, "#da70d6"]].map(([p, col]) => <IndRow key={p} label={`MA${p}`} value={indData[`ma${p}`]?.toFixed(p <= 10 ? 4 : 2)} color={col} />)}
+                <IndRow label="多空排列" value={(indData.ma5 || 0) > (indData.ma20 || 0) ? "多頭 ↑" : "空頭 ↓"} color={(indData.ma5 || 0) > (indData.ma20 || 0) ? "#26a69a" : "#ef5350"} />
+              </Section>
+            </>}
+
+            {sideTab === "recs" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>掃前 200 大幣 · SMC 評分</div>
+                </div>
+                <button onClick={() => setRecsTs(0)} disabled={recsLoading} style={{ background: recsLoading ? "#1a2535" : "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: recsLoading ? 0.5 : 1 }}>{recsLoading ? "掃描中..." : "↻ 刷新"}</button>
+              </div>
+              {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 10-15 秒...</div>}
+              {recs && <>
+                <Section title={`🟢 適合做多 (${recs.longs.length})`} color="#26a69a">
+                  {recs.longs.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做多訊號</div>}
+                  {recs.longs.map((r) => (
+                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                      <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
+                      <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
+                      <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
+                    </button>
+                  ))}
+                </Section>
+                <Section title={`🔴 適合做空 (${recs.shorts.length})`} color="#ef5350">
+                  {recs.shorts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做空訊號</div>}
+                  {recs.shorts.map((r) => (
+                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                      <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
+                      <span style={{ color: "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
+                      <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
+                    </button>
+                  ))}
+                </Section>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>已掃 {recs.scanned} / {recs.total} 幣 · {new Date(recsTs).toLocaleTimeString()}</div>
+              </>}
+            </>}
+
+            {sideTab === "alerts" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
+                <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘掃前 200 大幣 OI 變化</div>
+              </div>
+              <Section title={`警報事件 (${alerts.length})`} color="#f0b90b" badge="即時">
+                {alerts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>目前無異常，每 3 分鐘自動掃描...</div>}
+                {alerts.map((al, i) => (
+                  <button key={`${al.symbol}-${al.ts}-${i}`} onClick={() => { const c = coins.find((x) => x.symbol === al.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${al.color}44`, borderLeft: `3px solid ${al.color}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                        <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{al.name}</span>
+                        <span style={{ color: al.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{al.type}</span>
+                      </div>
+                      <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>
+                        OI {al.oiChgPct > 0 ? "+" : ""}{al.oiChgPct.toFixed(2)}% · 24h 價 {al.change > 0 ? "+" : ""}{al.change.toFixed(2)}% · {new Date(al.ts).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </Section>
+              <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
+                <p style={{ color: "#787b86", marginBottom: 4 }}>判讀說明：</p>
+                <p>· <span style={{ color: "#26a69a" }}>多頭觸發</span>：OI 暴增 + 價漲</p>
+                <p>· <span style={{ color: "#ef5350" }}>空頭觸發</span>：OI 暴增 + 價跌</p>
+                <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌</p>
+                <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升</p>
+              </div>
+            </>}
+
+            {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
+              <FeedState state={j10flash}>
+                {Array.isArray(j10flash) && j10flash.map((n, i) => (
+                  <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
+                    <div style={{ display: "flex", gap: 7 }}>
+                      <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
+                      <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
+                    </div>
+                  </div>
+                ))}
+              </FeedState>
+            </Section>}
+
+            {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
+              <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📡 資料來源</p>
+              <p>加密貨幣：Binance + OKX + CoinGecko 合併（幾百個幣）</p>
+              <p>期貨資料：Binance Futures（資金費率/OI/多空比/Taker CVD）</p>
+              <p>K 線：Binance WebSocket 即時</p>
+              <p>財經訊息：金十數據</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
+              <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
+              <p>每 5 分鐘掃 200 大幣推薦清單；每 3 分鐘掃 OI 異常警報。</p>
+            </div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
