@@ -1,17 +1,12 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti, aiAnalyze, aiAnalyzeCryptoDeep,
-  calcSMA, calcMACD, calcRSI, calcKDJ, UNIVERSE,
-  loadJin10Flash, loadCalendar, subscribeCryptoTicker, subscribeCryptoKline, loadPeriodChanges,
-  scanRecommendations, scanAnomalies, backtest,
+  calcSMA, calcMACD, calcRSI, calcKDJ,
+  loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges,
+  scanRecommendations, scanAnomalies, backtest, backtestMTF, analyzeMultiAI,
 } from "./data.js";
 
-const MA_COLORS = { 5: "#f0e68c", 10: "#87ceeb", 20: "#ff8c69", 60: "#da70d6" };
 const INTERVALS = ["15m", "1H", "4H", "1D"];
-const MARKET_CATS = [
-  { id: "crypto", label: "加密貨幣" },
-];
-const TV = { bg: "#131722", grid: "#1e222d", axisText: "#787b86", up: "#26a69a", down: "#ef5350", crosshair: "#758696", labelBg: "#363a45" };
 
 function useIsMobile() {
   const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth < 760 : false);
@@ -21,275 +16,6 @@ function useIsMobile() {
     return () => window.removeEventListener("resize", f);
   }, []);
   return m;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// DRAWING TOOLS storage
-// ──────────────────────────────────────────────────────────────────────────────
-function loadDrawings(key) {
-  try { const s = localStorage.getItem(`cryptex-draw:${key}`); return s ? JSON.parse(s) : []; } catch { return []; }
-}
-function saveDrawings(key, list) {
-  try { localStorage.setItem(`cryptex-draw:${key}`, JSON.stringify(list)); } catch {}
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// CHART
-// ──────────────────────────────────────────────────────────────────────────────
-function ChartCanvas({ candles, maSettings, subChart, livePrice, drawTool, drawKey }) {
-  const ref = useRef(null);
-  const dprRef = useRef(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
-  const [view, setView] = useState({ count: 90, offset: 0 });
-  const [hover, setHover] = useState(null);
-  const geomRef = useRef(null);
-  const dragRef = useRef(null);
-  const [drawings, setDrawings] = useState(() => loadDrawings(drawKey));
-  const [drawingNow, setDrawingNow] = useState(null); // {tool, p1, p2}
-
-  // 換 key 時重載
-  useEffect(() => { setDrawings(loadDrawings(drawKey)); setDrawingNow(null); }, [drawKey]);
-
-  const xy2data = (x, y, g) => {
-    if (!g) return null;
-    const vi = Math.round((x - g.PAD_L) / g.slotW - 0.5);
-    const idx = g.start + vi;
-    const t = (g.candles[idx] || g.candles[g.candles.length - 1]).t;
-    const p = g.priceMax - ((y - g.PAD_TOP) / g.PRICE_H) * (g.priceMax - g.priceMin);
-    return { t, p, idx };
-  };
-  const data2xy = (t, p, g) => {
-    if (!g) return null;
-    // 用時間找最近 candle index
-    let bestI = 0, best = Infinity;
-    for (let i = 0; i < g.candles.length; i++) {
-      const d = Math.abs(g.candles[i].t - t);
-      if (d < best) { best = d; bestI = i; }
-    }
-    const vi = bestI - g.start;
-    const x = g.PAD_L + (vi + 0.5) * g.slotW;
-    const y = g.PAD_TOP + g.PRICE_H - ((p - g.priceMin) / (g.priceMax - g.priceMin)) * g.PRICE_H;
-    return { x, y };
-  };
-
-  const draw = useCallback(() => {
-    const canvas = ref.current;
-    if (!canvas || !candles || candles.length === 0) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = dprRef.current;
-    const W = canvas.offsetWidth, H = canvas.offsetHeight;
-    if (W === 0 || H === 0) return;
-    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
-      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-    }
-    ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = TV.bg; ctx.fillRect(0, 0, W, H);
-    const PAD_BOT = 22, PAD_R = 64, PAD_L = 6, PAD_TOP = 8;
-    const PRICE_H = Math.floor((H - PAD_BOT) * 0.54), VOL_H = Math.floor((H - PAD_BOT) * 0.10), IND_H = Math.floor((H - PAD_BOT) * 0.28);
-    const chartW = W - PAD_L - PAD_R, indOffset = PRICE_H + PAD_TOP + VOL_H + 12;
-    const total = candles.length, count = Math.min(view.count, total);
-    const end = total - view.offset, start = Math.max(0, end - count);
-    const vis = candles.slice(start, end), vn = vis.length;
-    if (vn === 0) { ctx.restore(); return; }
-    const allCloses = candles.map((c) => c.c), allHighs = candles.map((c) => c.h), allLows = candles.map((c) => c.l);
-    const visHighs = vis.map((c) => c.h), visLows = vis.map((c) => c.l), visVols = vis.map((c) => c.v);
-    const priceMin = Math.min(...visLows) * 0.999, priceMax = Math.max(...visHighs) * 1.001, volMax = Math.max(...visVols) * 1.15;
-    const slotW = chartW / vn, cw = Math.max(1, slotW * 0.7);
-    const xOf = (i) => PAD_L + (i + 0.5) * slotW;
-    const yP = (v) => PAD_TOP + PRICE_H - ((v - priceMin) / (priceMax - priceMin)) * PRICE_H;
-    const yV = (v) => PRICE_H + PAD_TOP + 4 + VOL_H - (v / volMax) * VOL_H;
-    const yI = (v, mn, mx, off) => off + IND_H - ((v - mn) / (mx - mn || 1)) * IND_H;
-    const fmtP = (v) => (v > 1000 ? v.toFixed(1) : v > 1 ? v.toFixed(3) : v.toFixed(6));
-    geomRef.current = { PAD_L, PRICE_H, PAD_TOP, slotW, start, vn, priceMin, priceMax, W, H, PAD_BOT, chartW, fmtP, yP, candles };
-
-    ctx.strokeStyle = TV.grid; ctx.lineWidth = 1;
-    for (let i = 0; i <= 5; i++) {
-      const y = PAD_TOP + (PRICE_H / 5) * i;
-      ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + chartW, y); ctx.stroke();
-      const p = priceMax - ((priceMax - priceMin) / 5) * i;
-      ctx.fillStyle = TV.axisText; ctx.font = "10px Arial"; ctx.textAlign = "left";
-      ctx.fillText(fmtP(p), PAD_L + chartW + 6, y + 3);
-    }
-    const tzOffset = -new Date().getTimezoneOffset();
-    const stepV = Math.max(1, Math.floor(vn / 7));
-    for (let i = 0; i < vn; i += stepV) { const x = xOf(i); ctx.strokeStyle = TV.grid; ctx.beginPath(); ctx.moveTo(x, PAD_TOP); ctx.lineTo(x, H - PAD_BOT); ctx.stroke(); }
-
-    Object.entries(maSettings).forEach(([period, en]) => {
-      if (!en) return;
-      const ma = calcSMA(allCloses, +period); ctx.strokeStyle = MA_COLORS[period]; ctx.lineWidth = 1.4; ctx.beginPath(); let s = false;
-      for (let i = 0; i < vn; i++) { const v = ma[start + i]; if (v == null) continue; if (!s) { ctx.moveTo(xOf(i), yP(v)); s = true; } else ctx.lineTo(xOf(i), yP(v)); }
-      ctx.stroke();
-    });
-
-    vis.forEach((c, i) => {
-      const up = c.c >= c.o, col = up ? TV.up : TV.down;
-      ctx.strokeStyle = col; ctx.lineWidth = 1; const x = Math.round(xOf(i)) + 0.5;
-      ctx.beginPath(); ctx.moveTo(x, yP(c.h)); ctx.lineTo(x, yP(c.l)); ctx.stroke();
-      const top = yP(Math.max(c.o, c.c)), bodyH = Math.max(1, yP(Math.min(c.o, c.c)) - top);
-      ctx.fillStyle = col; ctx.fillRect(xOf(i) - cw / 2, top, cw, bodyH);
-    });
-
-    vis.forEach((c, i) => { ctx.fillStyle = c.c >= c.o ? TV.up + "55" : TV.down + "55"; const top = yV(c.v); ctx.fillRect(xOf(i) - cw / 2, top, cw, Math.max(1, (PRICE_H + PAD_TOP + 4 + VOL_H) - top)); });
-    ctx.fillStyle = TV.axisText; ctx.font = "9px Arial"; ctx.textAlign = "left"; ctx.fillText("Vol", PAD_L + 4, PRICE_H + PAD_TOP + 12);
-
-    // Sub chart
-    if (subChart === "MACD") {
-      const { macd, signal, hist } = calcMACD(allCloses);
-      const vm = macd.slice(start, end), vs = signal.slice(start, end), vh = hist.slice(start, end);
-      const vals = [...vm, ...vs.filter(Boolean), ...vh.filter(Boolean)]; const mn = Math.min(...vals), mx = Math.max(...vals); const z = yI(0, mn, mx, indOffset);
-      ctx.strokeStyle = "#2a3a4a"; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.moveTo(PAD_L, z); ctx.lineTo(PAD_L + chartW, z); ctx.stroke();
-      vh.forEach((v, i) => { if (v == null) return; ctx.fillStyle = v >= 0 ? TV.up + "99" : TV.down + "99"; const y1 = yI(v, mn, mx, indOffset); ctx.fillRect(xOf(i) - cw / 2, Math.min(z, y1), cw, Math.abs(z - y1) || 1); });
-      const dl = (arr, col) => { ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.beginPath(); let s = false; arr.forEach((v, i) => { if (v == null) return; if (!s) { ctx.moveTo(xOf(i), yI(v, mn, mx, indOffset)); s = true; } else ctx.lineTo(xOf(i), yI(v, mn, mx, indOffset)); }); ctx.stroke(); };
-      dl(vm, "#2962ff"); dl(vs, "#ff6d00");
-      ctx.font = "9px Arial"; ctx.textAlign = "left"; ctx.fillStyle = "#2962ff"; ctx.fillText("MACD", PAD_L + 4, indOffset + 11); ctx.fillStyle = "#ff6d00"; ctx.fillText("Signal", PAD_L + 50, indOffset + 11);
-    } else if (subChart === "RSI") {
-      const rsi = calcRSI(allCloses).slice(start, end);
-      [[70, TV.down], [30, TV.up], [50, "#5d606b"]].forEach(([lv, col]) => { ctx.strokeStyle = col + "55"; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(PAD_L, yI(lv, 0, 100, indOffset)); ctx.lineTo(PAD_L + chartW, yI(lv, 0, 100, indOffset)); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = col + "99"; ctx.font = "9px Arial"; ctx.textAlign = "left"; ctx.fillText(lv, PAD_L + chartW + 6, yI(lv, 0, 100, indOffset) + 3); });
-      ctx.strokeStyle = "#7e57c2"; ctx.lineWidth = 1.4; ctx.beginPath(); let s = false; rsi.forEach((v, i) => { if (v == null) return; if (!s) { ctx.moveTo(xOf(i), yI(v, 0, 100, indOffset)); s = true; } else ctx.lineTo(xOf(i), yI(v, 0, 100, indOffset)); }); ctx.stroke();
-      ctx.fillStyle = "#7e57c2"; ctx.font = "9px Arial"; ctx.textAlign = "left"; ctx.fillText("RSI 14", PAD_L + 4, indOffset + 11);
-    } else if (subChart === "KDJ") {
-      const kdj = calcKDJ(allHighs, allLows, allCloses).slice(start, end);
-      const ks = kdj.map((x) => x.k).filter(Boolean), ds = kdj.map((x) => x.d).filter(Boolean), js = kdj.map((x) => x.j).filter(Boolean);
-      const mn = Math.min(...ks, ...ds, ...js) - 5, mx = Math.max(...ks, ...ds, ...js) + 5;
-      const dl = (key, col) => { ctx.strokeStyle = col; ctx.lineWidth = 1.3; ctx.beginPath(); let s = false; kdj.forEach((v, i) => { const val = v[key]; if (val == null) return; if (!s) { ctx.moveTo(xOf(i), yI(val, mn, mx, indOffset)); s = true; } else ctx.lineTo(xOf(i), yI(val, mn, mx, indOffset)); }); ctx.stroke(); };
-      dl("k", "#ffb300"); dl("d", "#2962ff"); dl("j", "#e040fb");
-      ctx.font = "9px Arial"; ctx.textAlign = "left"; [["K", "#ffb300", 0], ["D", "#2962ff", 18], ["J", "#e040fb", 36]].forEach(([l, c, x]) => { ctx.fillStyle = c; ctx.fillText(l, PAD_L + 4 + x, indOffset + 11); });
-    }
-
-    ctx.strokeStyle = TV.grid; ctx.lineWidth = 1; [PRICE_H + PAD_TOP + 2, indOffset - 4].forEach((y) => { ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + chartW, y); ctx.stroke(); });
-    ctx.beginPath(); ctx.moveTo(PAD_L, H - PAD_BOT); ctx.lineTo(PAD_L + chartW, H - PAD_BOT); ctx.stroke();
-    ctx.font = "10px Arial"; ctx.textAlign = "center"; ctx.fillStyle = TV.axisText;
-    for (let i = 0; i < vn; i += stepV) { const d = new Date(vis[i].t + tzOffset * 60000); const hh = String(d.getUTCHours()).padStart(2, "0"), mm = String(d.getUTCMinutes()).padStart(2, "0"), dd = String(d.getUTCDate()).padStart(2, "0"), mo = String(d.getUTCMonth() + 1).padStart(2, "0"); ctx.fillText(`${mo}/${dd} ${hh}:${mm}`, xOf(i), H - PAD_BOT + 14); }
-
-    // 即時價（用 livePrice 優先）
-    const lcOrig = candles[candles.length - 1];
-    const lastPrice = livePrice && livePrice > 0 ? livePrice : lcOrig.c;
-    const lastUp = lastPrice >= lcOrig.o;
-    if (lastPrice >= priceMin && lastPrice <= priceMax) {
-      const y = yP(lastPrice); ctx.strokeStyle = lastUp ? TV.up : TV.down; ctx.lineWidth = 1; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + chartW, y); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = lastUp ? TV.up : TV.down; ctx.fillRect(PAD_L + chartW, y - 9, PAD_R, 18); ctx.fillStyle = "#fff"; ctx.font = "bold 10px Arial"; ctx.textAlign = "left"; ctx.fillText(fmtP(lastPrice), PAD_L + chartW + 5, y + 3);
-    }
-
-    // 繪圖：已存的 + 正在拖的
-    const allShapes = [...drawings];
-    if (drawingNow && drawingNow.p1 && drawingNow.p2) allShapes.push(drawingNow);
-    allShapes.forEach((sh) => {
-      const a = data2xy(sh.p1.t, sh.p1.p, geomRef.current);
-      const b = data2xy(sh.p2.t, sh.p2.p, geomRef.current);
-      if (!a || !b) return;
-      ctx.strokeStyle = sh.color || "#58a6ff"; ctx.lineWidth = 1.5;
-      if (sh.tool === "trend") {
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-      } else if (sh.tool === "hline") {
-        ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(PAD_L, a.y); ctx.lineTo(PAD_L + chartW, a.y); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = sh.color || "#58a6ff"; ctx.font = "9px Arial"; ctx.fillText(fmtP(sh.p1.p), PAD_L + 4, a.y - 4);
-      } else if (sh.tool === "rect") {
-        const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
-        ctx.fillStyle = (sh.color || "#58a6ff") + "22"; ctx.fillRect(x0, y0, w, h);
-        ctx.strokeRect(x0, y0, w, h);
-      }
-    });
-
-    // 十字準星
-    if (hover && hover.x >= PAD_L && hover.x <= PAD_L + chartW && hover.y >= PAD_TOP && hover.y <= H - PAD_BOT) {
-      ctx.strokeStyle = TV.crosshair; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-      const snapX = xOf(Math.round((hover.x - PAD_L) / slotW - 0.5));
-      ctx.beginPath(); ctx.moveTo(snapX, PAD_TOP); ctx.lineTo(snapX, H - PAD_BOT); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(PAD_L, hover.y); ctx.lineTo(PAD_L + chartW, hover.y); ctx.stroke(); ctx.setLineDash([]);
-      const hp = priceMax - ((hover.y - PAD_TOP) / PRICE_H) * (priceMax - priceMin);
-      if (hover.y <= PAD_TOP + PRICE_H) { ctx.fillStyle = TV.labelBg; ctx.fillRect(PAD_L + chartW, hover.y - 9, PAD_R, 18); ctx.fillStyle = "#fff"; ctx.font = "10px Arial"; ctx.textAlign = "left"; ctx.fillText(fmtP(hp), PAD_L + chartW + 5, hover.y + 3); }
-    }
-
-    // OHLC top label
-    const lc2 = hover && hover.idx != null && candles[hover.idx] ? candles[hover.idx] : lcOrig;
-    const lcUp = lc2.c >= lc2.o;
-    ctx.font = "10px Arial"; ctx.textAlign = "left"; let lx = PAD_L + 4;
-    [["O", lc2.o], ["H", lc2.h], ["L", lc2.l], ["C", lc2.c]].forEach(([k, v]) => { ctx.fillStyle = TV.axisText; ctx.fillText(k, lx, PAD_TOP + 4); lx += 10; ctx.fillStyle = lcUp ? TV.up : TV.down; const t = fmtP(v); ctx.fillText(t, lx, PAD_TOP + 4); lx += ctx.measureText(t).width + 10; });
-
-    ctx.restore();
-  }, [candles, maSettings, subChart, view, hover, livePrice, drawings, drawingNow]);
-
-  useEffect(() => {
-    const canvas = ref.current; if (!canvas) return; let raf;
-    const tryDraw = (a = 0) => { if (!ref.current) return; if (ref.current.offsetHeight > 0 && ref.current.offsetWidth > 0) draw(); else if (a < 60) raf = requestAnimationFrame(() => tryDraw(a + 1)); };
-    const obs = new ResizeObserver(() => draw()); obs.observe(canvas); if (canvas.parentElement) obs.observe(canvas.parentElement); tryDraw();
-    return () => { obs.disconnect(); if (raf) cancelAnimationFrame(raf); };
-  }, [draw]);
-  useEffect(() => { draw(); }, [draw]);
-
-  const getXY = (cx, cy) => {
-    const c = ref.current; if (!c) return null;
-    const r = c.getBoundingClientRect();
-    return { x: cx - r.left, y: cy - r.top };
-  };
-
-  const onPointerDown = (cx, cy) => {
-    const xy = getXY(cx, cy); if (!xy) return;
-    const g = geomRef.current; if (!g) return;
-    if (drawTool && drawTool !== "none") {
-      const p = xy2data(xy.x, xy.y, g);
-      if (!p) return;
-      setDrawingNow({ tool: drawTool, p1: { t: p.t, p: p.p }, p2: { t: p.t, p: p.p }, color: "#58a6ff" });
-    } else {
-      dragRef.current = { startX: cx, startOffset: view.offset };
-    }
-  };
-  const onPointerMove = (cx, cy) => {
-    const xy = getXY(cx, cy); if (!xy) return;
-    setHover({ x: xy.x, y: xy.y, idx: (() => { const g = geomRef.current; if (!g) return null; const vi = Math.round((xy.x - g.PAD_L) / g.slotW - 0.5); if (vi >= 0 && vi < g.vn) return g.start + vi; return null; })() });
-    if (drawingNow) {
-      const p = xy2data(xy.x, xy.y, geomRef.current);
-      if (p) setDrawingNow((d) => ({ ...d, p2: { t: p.t, p: p.p } }));
-    } else if (dragRef.current) {
-      const g = geomRef.current; if (!g) return;
-      const dx = cx - dragRef.current.startX;
-      let offset = dragRef.current.startOffset + Math.round(dx / g.slotW);
-      offset = Math.max(0, Math.min(candles.length - view.count, offset));
-      setView((v) => ({ ...v, offset }));
-    }
-  };
-  const onPointerUp = () => {
-    if (drawingNow) {
-      // 完成繪圖時：太短的線視為點，丟棄
-      const a = drawingNow.p1, b = drawingNow.p2;
-      const tooSmall = Math.abs(b.t - a.t) < 1 && Math.abs(b.p - a.p) < 1e-9;
-      if (!tooSmall) {
-        const next = [...drawings, drawingNow];
-        setDrawings(next); saveDrawings(drawKey, next);
-      }
-      setDrawingNow(null);
-    }
-    dragRef.current = null;
-  };
-  const onWheel = (e) => {
-    e.preventDefault();
-    setView((v) => {
-      let count = Math.round(v.count * (e.deltaY > 0 ? 1.15 : 0.87));
-      count = Math.max(20, Math.min(candles.length, count));
-      return { ...v, count };
-    });
-  };
-
-  // 暴露給外層的清除（透過 effect 監聽 drawTool === "clear"）
-  useEffect(() => {
-    if (drawTool === "clear") {
-      setDrawings([]); saveDrawings(drawKey, []);
-    }
-  }, [drawTool, drawKey]);
-
-  return (
-    <canvas
-      ref={ref}
-      style={{ width: "100%", height: "100%", display: "block", minHeight: 300, cursor: drawTool && drawTool !== "none" ? "crosshair" : "crosshair", touchAction: "none" }}
-      onMouseMove={(e) => onPointerMove(e.clientX, e.clientY)}
-      onMouseLeave={() => { setHover(null); onPointerUp(); }}
-      onMouseDown={(e) => onPointerDown(e.clientX, e.clientY)}
-      onMouseUp={onPointerUp}
-      onWheel={onWheel}
-      onTouchStart={(e) => { const t = e.touches[0]; onPointerDown(t.clientX, t.clientY); onPointerMove(t.clientX, t.clientY); }}
-      onTouchMove={(e) => { const t = e.touches[0]; onPointerMove(t.clientX, t.clientY); }}
-      onTouchEnd={() => { setHover(null); onPointerUp(); }}
-    />
-  );
 }
 
 function Section({ title, color = "#58a6ff", badge, defaultOpen = true, children }) {
@@ -328,85 +54,96 @@ function fmtFeedTime(t) {
   if (isNaN(d.getTime())) return String(t).slice(0, 16);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+const SearchInput = ({ value, onChange }) => (
+  <input
+    value={value}
+    onChange={(e) => onChange(e.target.value)}
+    placeholder="搜尋..."
+    style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }}
+  />
+);
 
-// ──────────────────────────────────────────────────────────────────────────────
-// 搜尋輸入：用 React 受控但避免每次外部 props 變化都重渲染導致鍵盤跳掉
-// ──────────────────────────────────────────────────────────────────────────────
-const SearchInput = ({ value, onChange }) => {
+// AI 卡片
+function AICard({ ai, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (!ai) return null;
   return (
-    <input
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder="搜尋..."
-      style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }}
-    />
+    <div style={{ border: `1px solid ${ai.color}55`, background: `${ai.color}0a`, borderRadius: 8, marginBottom: 6, overflow: "hidden" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "transparent", border: "none", padding: "8px 10px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+        <span style={{ fontSize: 16 }}>{ai.emoji}</span>
+        <div style={{ flex: 1, textAlign: "left" }}>
+          <div style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ai.name}</div>
+          <div style={{ color: ai.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{ai.direction} · {ai.confidence}%</div>
+        </div>
+        <div style={{ width: 60, height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden", marginRight: 6 }}>
+          <div style={{ width: `${ai.confidence}%`, height: "100%", background: ai.color }} />
+        </div>
+        <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && <div style={{ padding: "0 10px 10px", borderTop: "1px solid #1a2535" }}>
+        {ai.reasons.map((r, i) => (
+          <div key={i} style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.6, padding: "2px 0" }}>· {r}</div>
+        ))}
+      </div>}
+    </div>
   );
-};
+}
 
-// ──────────────────────────────────────────────────────────────────────────────
-// APP
-// ──────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
-  const [category, setCategory] = useState("crypto");
-  const [tf, setTf] = useState("15m");
-  const [subChart, setSubChart] = useState("MACD");
-  const [maSettings, setMaSettings] = useState({ 5: true, 10: true, 20: true, 60: false });
+  const [tf, setTf] = useState("1H");
   const [candles, setCandles] = useState([]);
-  const [sideTab, setSideTab] = useState("indicators");
-  const [mobileView, setMobileView] = useState("chart");
+  const [sideTab, setSideTab] = useState("smc");
   const [smc, setSmc] = useState(null);
   const [smcMulti, setSmcMulti] = useState([]);
   const [ai, setAI] = useState(null);
+  const [aiDeep, setAiDeep] = useState(null);
+  const [aiDeepLoading, setAiDeepLoading] = useState(false);
+  const [multiAI, setMultiAI] = useState(null);
+  const [multiAILoading, setMultiAILoading] = useState(false);
   const [notif, setNotif] = useState(null);
   const [notifOn, setNotifOn] = useState(false);
   const [status, setStatus] = useState("載入中...");
   const [j10flash, setJ10flash] = useState(undefined);
-  const [drawTool, setDrawTool] = useState("none");
-  const [livePrice, setLivePrice] = useState(0);
   const [periodChg, setPeriodChg] = useState(null);
   const [recs, setRecs] = useState(null);
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsTs, setRecsTs] = useState(0);
   const [alerts, setAlerts] = useState([]);
-  const [aiDeep, setAiDeep] = useState(null);
-  const [aiDeepLoading, setAiDeepLoading] = useState(false);
-  const [listLimit, setListLimit] = useState(50);
   const [btResult, setBtResult] = useState(null);
   const [btLoading, setBtLoading] = useState(false);
-  const [btTf, setBtTf] = useState("1H");
-  const lastSig = useRef(null);
-  const lastWsTs = useRef(0);
+  const [btMode, setBtMode] = useState("mtf"); // "mtf" 高勝率, "simple" 基本
+  const [listLimit, setListLimit] = useState(50);
 
-  // 搜尋過濾用 useMemo（避免無謂 re-render 導致 input 重建）
+  const lastSig = { current: null }; // 暫不用 useRef 簡化
+
   const filtered = useMemo(() => {
     if (!search) return coins;
     const q = search.toUpperCase();
     return coins.filter((c) => c.name.toUpperCase().includes(q) || (c.symbol || "").toUpperCase().includes(q) || (c.label || "").toUpperCase().includes(q));
   }, [search, coins]);
-  // 性能：未搜尋時只顯示前 listLimit 個，避免渲染上百個項目造成卡頓
   const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
-  // 載入市場列表（有搜尋時暫停輪詢，避免鍵盤被收）
+  // 載入加密貨幣列表
   useEffect(() => {
     let cancel = false;
     async function run() {
-      const list = await loadMarket(category);
+      const list = await loadMarket("crypto");
       if (cancel) return;
       setCoins(list);
       setStatus(list.length > 0 ? `${list.length} 商品 · 即時` : `來源連線中`);
       setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
     }
     run();
-    if (search) return () => { cancel = true; }; // 搜尋中不輪詢
+    if (search) return () => { cancel = true; };
     const iv = setInterval(run, 30000);
     return () => { cancel = true; clearInterval(iv); };
-  }, [category, search]);
+  }, [search]);
 
-  // 載入金十快訊
+  // 金十快訊
   useEffect(() => {
     let cancel = false;
     async function run() { const r = await loadJin10Flash(); if (!cancel) setJ10flash(r); }
@@ -414,16 +151,22 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, []);
 
-  // 載入 K 線歷史（一次性，後續由 K 線 WS 即時更新，不再輪詢）
+  // 載入 K 線（後台用，給指標/SMC/AI 計算，UI 不畫圖）
   useEffect(() => {
-    if (!selected) return; let cancel = false;
-    setCandles([]); // 清舊資料，避免切換時閃舊圖
-    async function run() { const k = await loadKlines(selected, tf); if (!cancel && k && k.length) setCandles(k); }
-    run();
-    return () => { cancel = true; };
+    if (!selected) return;
+    let cancel = false;
+    setCandles([]);
+    loadKlines(selected, tf).then((k) => { if (!cancel && k && k.length) setCandles(k); });
+    const iv = setInterval(() => {
+      loadKlines(selected, tf).then((k) => {
+        if (cancel || !k || !k.length) return;
+        setCandles((prev) => (prev.length && k[k.length - 1].t === prev[prev.length - 1].t ? prev : k));
+      });
+    }, 60000);
+    return () => { cancel = true; clearInterval(iv); };
   }, [selected, tf]);
 
-  // SMC 主訊號（只在新 K 棒生成時重算，避免 K 棒內部 tick 觸發整頁重算）
+  // SMC（只在新 K 棒時重算）
   const lastCandleT = candles.length > 0 ? candles[candles.length - 1].t : 0;
   useEffect(() => {
     if (candles.length < 40 || !selected) { setSmc(null); return; }
@@ -451,14 +194,14 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
-  // AI 分析（依賴 smc，不依賴 candles，避免 tick 觸發重算）
+  // AI 基本（用於 fallback）
   useEffect(() => {
     if (!selected || !candles.length || !smc) { setAI(null); return; }
     setAI(aiAnalyze(selected, candles, smc, smcMulti));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, smc, smcMulti]);
 
-  // 多週期漲跌（今日/7天/30天/90天/180天/1年）
+  // 多週期漲跌
   useEffect(() => {
     if (!selected) { setPeriodChg(null); return; }
     let cancel = false;
@@ -467,44 +210,30 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
-  // 加密貨幣 trade WebSocket — 只更新左上即時價（節流 100ms）
+  // Trade WebSocket（即時價）
   useEffect(() => {
-    setLivePrice(0);
     if (!selected || selected.cat !== "crypto") return;
+    let lastTs = 0;
     const sym = selected.binanceSymbol || `${selected.name}USDT`;
     const off = subscribeCryptoTicker(sym, (p) => {
       const now = Date.now();
-      if (now - lastWsTs.current < 100) return;
-      lastWsTs.current = now;
-      setLivePrice(p);
-    });
-    return () => off();
-  }, [selected]);
-
-  // 加密貨幣 K 線 WebSocket — 每秒推送，更新最後一根 K 棒（取代輪詢）
-  useEffect(() => {
-    if (!selected || selected.cat !== "crypto") return;
-    const sym = selected.binanceSymbol || `${selected.name}USDT`;
-    const off = subscribeCryptoKline(sym, tf, (k) => {
+      if (now - lastTs < 200) return;
+      lastTs = now;
       setCandles((cs) => {
         if (!cs || !cs.length) return cs;
         const copy = cs.slice();
-        const last = copy[copy.length - 1];
-        if (k.t === last.t) {
-          // 同一根 K 棒，更新 OHLC
-          copy[copy.length - 1] = { t: last.t, o: last.o, h: k.h, l: k.l, c: k.c, v: k.v };
-        } else if (k.t > last.t) {
-          // 新一根 K 棒
-          copy.push({ t: k.t, o: k.o, h: k.h, l: k.l, c: k.c, v: k.v });
-          if (copy.length > 500) copy.shift();
-        }
+        const last = { ...copy[copy.length - 1] };
+        last.c = p;
+        if (p > last.h) last.h = p;
+        if (p < last.l) last.l = p;
+        copy[copy.length - 1] = last;
         return copy;
       });
     });
     return () => off();
-  }, [selected, tf]);
+  }, [selected]);
 
-  // 多空推薦掃描（切到「推薦」分頁時觸發，5 分鐘內不重掃）
+  // 推薦掃描
   const coinsLoaded = coins.length > 0;
   useEffect(() => {
     if (sideTab !== "recs" || !coinsLoaded) return;
@@ -516,9 +245,10 @@ export default function App() {
       setRecs(r); setRecsTs(Date.now()); setRecsLoading(false);
     }).catch(() => { if (!cancel) setRecsLoading(false); });
     return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sideTab, coinsLoaded, recsTs]);
 
-  // 持倉異常警報（每 3 分鐘掃前 200 大幣）
+  // 警報掃描
   useEffect(() => {
     if (!coinsLoaded) return;
     let cancel = false;
@@ -527,7 +257,6 @@ export default function App() {
       try {
         const a = await scanAnomalies(coins, 200);
         if (cancel) return;
-        // 合併新警報到舊的（去重以 symbol+type）
         setAlerts((prev) => {
           const map = new Map();
           [...a, ...prev].forEach((x) => {
@@ -542,34 +271,51 @@ export default function App() {
     scan();
     const iv = setInterval(scan, 3 * 60 * 1000);
     return () => { cancel = true; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coinsLoaded]);
 
-  // AI 深度分析（切到 AI 分頁時抓期貨資金面）
+  // AI 深度（單一綜合，仍保留）
   useEffect(() => {
-    if (sideTab !== "ai" || !selected || !candles.length || !smc) { return; }
+    if (sideTab !== "ai" || !selected || !candles.length || !smc) return;
     let cancel = false;
     setAiDeepLoading(true);
     aiAnalyzeCryptoDeep(selected, candles, smc, smcMulti).then((r) => {
       if (!cancel) { setAiDeep(r); setAiDeepLoading(false); }
     }).catch(() => { if (!cancel) setAiDeepLoading(false); });
     return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sideTab, selected, smc, smcMulti]);
 
-  // 回測（切到回測分頁時跑一次，selected/btTf 變動時重跑）
+  // 多 AI 個別分析（5 個派系）
+  useEffect(() => {
+    if (sideTab !== "ai" || !selected || !candles.length || !smc) return;
+    let cancel = false;
+    setMultiAILoading(true);
+    analyzeMultiAI(selected, candles, smc, smcMulti).then((r) => {
+      if (!cancel) { setMultiAI(r); setMultiAILoading(false); }
+    }).catch(() => { if (!cancel) setMultiAILoading(false); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sideTab, selected, smc, smcMulti]);
+
+  // 回測（高勝率多時區 或 基本版）
   useEffect(() => {
     if (sideTab !== "backtest" || !selected) return;
     let cancel = false;
     setBtLoading(true);
     setBtResult(null);
     (async () => {
-      const k = await loadKlines(selected, btTf);
-      if (cancel) return;
-      if (!k || k.length < 80) { setBtLoading(false); return; }
-      const r = backtest(k);
+      let r;
+      if (btMode === "mtf") {
+        r = await backtestMTF(selected).catch(() => null);
+      } else {
+        const k = await loadKlines(selected, "1H");
+        r = k && k.length >= 80 ? backtest(k) : null;
+      }
       if (!cancel) { setBtResult(r); setBtLoading(false); }
     })();
     return () => { cancel = true; };
-  }, [sideTab, selected, btTf]);
+  }, [sideTab, selected, btMode]);
 
   async function enableNotif() {
     if (typeof Notification === "undefined") { setNotifOn(true); return; }
@@ -583,18 +329,9 @@ export default function App() {
     return { rsi: rsi[n], macd: macd[n], signal: signal[n], hist: hist[n], kdj: kdj[n], ma5: calcSMA(closes, 5)[n], ma10: calcSMA(closes, 10)[n], ma20: calcSMA(closes, 20)[n], ma60: calcSMA(closes, 60)[n], curVol: vols[n], avgVol: vols.slice(-20).reduce((a, b) => a + b, 0) / 20 };
   })();
 
-  // 顯示價格：crypto 用 WS livePrice，其他用 K 線最後 close（保證圖價同步）
-  const displayPrice = (() => {
-    if (selected?.cat === "crypto" && livePrice > 0) return livePrice;
-    if (candles.length) return candles[candles.length - 1].c;
-    return selected?.price || 0;
-  })();
-  const refPrice = selected ? (selected.cat === "crypto" ? (coins.find((c) => c.symbol === selected.symbol)?.price || selected.price) : (candles[0]?.c || selected.price)) : 0;
-  const change = refPrice > 0 ? ((displayPrice - refPrice) / refPrice) * 100 : (selected?.change || 0);
-  // 對 crypto 用 24hr change
+  const displayPrice = candles.length ? candles[candles.length - 1].c : (selected?.price || 0);
   const change24h = selected ? (coins.find((c) => c.symbol === selected.symbol)?.change ?? selected.change ?? 0) : 0;
-  const finalChange = selected?.cat === "crypto" ? change24h : (selected?.change ?? 0);
-  const up = finalChange >= 0;
+  const up = change24h >= 0;
   const fmtPr = (v) => (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
   const fmtVol = (v) => {
     if (!v || v <= 0) return "";
@@ -603,21 +340,6 @@ export default function App() {
     if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
     return String(Math.round(v));
   };
-
-  const drawKey = `${selected?.symbol || "x"}-${tf}`;
-
-  const renderCoinList = (horizontal) => (
-    <>
-      <div style={{ display: "flex", flexWrap: horizontal ? "nowrap" : "wrap", gap: 4, padding: horizontal ? "6px 8px 0" : "8px 8px 4px", overflowX: horizontal ? "auto" : "visible" }}>
-        {MARKET_CATS.map((c) => (
-          <button key={c.id} onClick={() => setCategory(c.id)} style={{ flexShrink: 0, background: category === c.id ? "#0f1e2e" : "transparent", border: `1px solid ${category === c.id ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: category === c.id ? "#58a6ff" : "#8b949e", padding: "3px 8px", fontSize: 10, fontFamily: "monospace", whiteSpace: "nowrap" }}>{c.label}</button>
-        ))}
-      </div>
-      <div style={{ padding: "4px 8px 6px" }}>
-        <SearchInput key="search-box" value={search} onChange={setSearch} />
-      </div>
-    </>
-  );
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#070b10", color: "#c9d1d9", fontFamily: "system-ui,sans-serif", overflow: "hidden" }}>
@@ -646,46 +368,71 @@ export default function App() {
         </div>
       </div>
 
+      {/* 手機版：商品列表 chips（橫向） */}
       {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
-        {renderCoinList(true)}
+        <div style={{ padding: "6px 8px" }}>
+          <SearchInput key="search-box" value={search} onChange={setSearch} />
+        </div>
         <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
-          {visibleList.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
-            <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
-              <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
-              <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
-            </button>); })}
+          {visibleList.map((coin) => {
+            const live = coins.find((c) => c.symbol === coin.symbol) || coin;
+            const active = selected?.symbol === coin.symbol;
+            return (
+              <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
+                <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
+                <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+              </button>
+            );
+          })}
         </div>
       </div>}
 
       <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden", minHeight: 0 }}>
-        {!isMobile && <div style={{ width: 180, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          {renderCoinList(false)}
+        {/* 桌面版：左側商品列表 */}
+        {!isMobile && <div style={{ width: 200, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+          <div style={{ padding: "8px" }}>
+            <SearchInput key="search-box" value={search} onChange={setSearch} />
+          </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
-            {visibleList.map((coin) => { const live = coins.find((c) => c.symbol === coin.symbol) || coin; const active = selected?.symbol === coin.symbol; return (
-              <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
-                  <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.label ? (coin.label).slice(0, 6) : ""}{fmtVol(live.volume) ? (coin.label ? " · " : "") + fmtVol(live.volume) : ""}</div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
-                  <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(live.price)}</span>
-                  <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
-                </div>
-              </button>); })}
+            {visibleList.map((coin) => {
+              const live = coins.find((c) => c.symbol === coin.symbol) || coin;
+              const active = selected?.symbol === coin.symbol;
+              return (
+                <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
+                    <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.label ? (coin.label).slice(0, 6) : ""}{fmtVol(live.volume) ? (coin.label ? " · " : "") + fmtVol(live.volume) : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
+                    <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(live.price)}</span>
+                    <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+                  </div>
+                </button>
+              );
+            })}
             {!search && filtered.length > visibleList.length && <button onClick={() => setListLimit((l) => l + 50)} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", color: "#58a6ff", padding: "8px", fontSize: 10, fontFamily: "monospace", cursor: "pointer" }}>載入更多 ({filtered.length - visibleList.length} 個)</button>}
           </div>
         </div>}
 
-        {(!isMobile || mobileView === "chart") && <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <div style={{ background: "#131722", borderBottom: "1px solid #1e222d", padding: "8px 14px", display: "flex", alignItems: "center", gap: 20, flexShrink: 0, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}><span style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: "#e6edf3" }}>${fmtPr(displayPrice)}</span><span style={{ color: up ? "#26a69a" : "#ef5350", fontSize: 11, fontFamily: "monospace" }}>{up ? "▲" : "▼"} {Math.abs(finalChange).toFixed(2)}%</span></div>
-              <div style={{ color: "#354050", fontSize: 9, fontFamily: "monospace" }}>{selected?.symbol} · {MARKET_CATS.find((c) => c.id === category)?.label} · {selected?.cat === "crypto" ? "WS 即時" : "即時"}</div>
+        {/* 主分析區（無 K 線） */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          {/* 價格 header */}
+          <div style={{ background: "#0d1520", borderBottom: "1px solid #1a2535", padding: "10px 14px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: "#e6edf3" }}>${fmtPr(displayPrice)}</span>
+                <span style={{ color: "#354050", fontSize: 10, fontFamily: "monospace" }}>{selected?.symbol} · 加密貨幣</span>
+              </div>
+              <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                <div style={{ color: up ? "#26a69a" : "#ef5350", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{up ? "▲" : "▼"} {Math.abs(change24h).toFixed(2)}%</div>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>24h 變化</div>
+              </div>
             </div>
-            {candles.length > 0 && (() => { const lc = candles[candles.length - 1]; return [["開", lc.o], ["高", lc.h, "#26a69a"], ["低", lc.l, "#ef5350"], ["收", lc.c]].map(([l, v, c]) => <div key={l}><div style={{ color: "#354050", fontSize: 9, fontFamily: "monospace" }}>{l}</div><div style={{ color: c || "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(v)}</div></div>); })()}
           </div>
-          {periodChg && <div style={{ background: "#131722", borderBottom: "1px solid #1e222d", padding: "4px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
+
+          {/* 多週期 bar */}
+          {periodChg && <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
             {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([lbl, val]) => (
               <div key={lbl} style={{ flex: 1, minWidth: 52, textAlign: "center", padding: "0 4px" }}>
                 <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{lbl}</div>
@@ -693,50 +440,24 @@ export default function App() {
               </div>
             ))}
           </div>}
-          <div style={{ background: "#131722", borderBottom: "1px solid #1e222d", padding: "5px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
-            {INTERVALS.map((iv) => <button key={iv} onClick={() => setTf(iv)} style={{ background: tf === iv ? "#0f1e2e" : "transparent", border: `1px solid ${tf === iv ? "#58a6ff" : "transparent"}`, borderRadius: 4, color: tf === iv ? "#58a6ff" : "#4a5568", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>{iv}</button>)}
-            <div style={{ width: 1, height: 14, background: "#1a2535" }} />
-            <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>MA:</span>
-            {Object.entries(MA_COLORS).map(([p, col]) => <button key={p} onClick={() => setMaSettings((s) => ({ ...s, [p]: !s[p] }))} style={{ background: maSettings[p] ? col + "18" : "transparent", border: `1px solid ${maSettings[p] ? col : "#1a2535"}`, borderRadius: 4, color: maSettings[p] ? col : "#354050", padding: "2px 7px", fontSize: 9, fontFamily: "monospace" }}>{p}</button>)}
-            <div style={{ width: 1, height: 14, background: "#1a2535" }} />
-            {["MACD", "RSI", "KDJ"].map((s) => <button key={s} onClick={() => setSubChart(s)} style={{ background: subChart === s ? "#1a2535" : "transparent", border: `1px solid ${subChart === s ? "#a78bfa" : "transparent"}`, borderRadius: 4, color: subChart === s ? "#a78bfa" : "#4a5568", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>{s}</button>)}
-            <div style={{ width: 1, height: 14, background: "#1a2535" }} />
-            <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>畫圖:</span>
-            {[["none", "🖱️"], ["trend", "📈線"], ["hline", "─線"], ["rect", "▢"], ["clear", "🗑️"]].map(([id, label]) => (
-              <button key={id} onClick={() => setDrawTool(id)} style={{ background: drawTool === id ? "#1e3a52" : "transparent", border: `1px solid ${drawTool === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: drawTool === id ? "#58a6ff" : "#8b949e", padding: "2px 6px", fontSize: 10, fontFamily: "monospace" }}>{label}</button>
+
+          {/* 時間框架（給分析用） */}
+          <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "6px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>分析時間框架:</span>
+            {INTERVALS.map((iv) => (
+              <button key={iv} onClick={() => setTf(iv)} style={{ background: tf === iv ? "#0f1e2e" : "transparent", border: `1px solid ${tf === iv ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: tf === iv ? "#58a6ff" : "#8b949e", padding: "3px 10px", fontSize: 10, fontFamily: "monospace" }}>{iv}</button>
             ))}
           </div>
-          <div style={{ flex: 1, overflow: "hidden", minHeight: isMobile ? 360 : 320, background: "#131722" }}>
-            {candles.length > 0 ? <ChartCanvas candles={candles} maSettings={maSettings} subChart={subChart} livePrice={livePrice} drawTool={drawTool} drawKey={drawKey} /> : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#354050", fontSize: 12, fontFamily: "monospace" }}>載入真實 K 線中...</div>}
-          </div>
-        </div>}
 
-        {(!isMobile || mobileView === "panel") && <div style={{ width: isMobile ? "100%" : 300, background: "#080d14", borderLeft: isMobile ? "none" : "1px solid #1a2535", display: "flex", flexDirection: "column", overflow: "hidden", flex: isMobile ? 1 : "none", minHeight: 0 }}>
-          <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto" }}>
-            {[["indicators", "指標"], ["smc", "SMC"], ["ai", "AI 分析"], ["recs", "推薦"], ["alerts", "警報"], ["backtest", "回測"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 56, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>)}
+          {/* 分頁 */}
+          <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto", background: "#080d14" }}>
+            {[["smc", "SMC"], ["ai", "AI 分析"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["backtest", "回測"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
+              <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>
+            ))}
           </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: "10px 8px" }}>
-            {sideTab === "indicators" && indData && <>
-              <Section title="RSI (14)" color="#a78bfa">
-                <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
-                <IndRow label="區間狀態" value={indData.rsi > 70 ? "超買 ⚠️" : indData.rsi < 30 ? "超賣 🟢" : "中性"} />
-                <div style={{ marginTop: 6, height: 3, borderRadius: 2, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${Math.min(100, indData.rsi || 0)}%`, height: "100%", background: indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#a78bfa" }} /></div>
-              </Section>
-              <Section title="MACD (12,26,9)" color="#2962ff">
-                <IndRow label="MACD" value={indData.macd?.toFixed(4)} /><IndRow label="Signal" value={indData.signal?.toFixed(4)} />
-                <IndRow label="Histogram" value={indData.hist?.toFixed(4)} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
-                <IndRow label="趨勢" value={(indData.hist || 0) > 0 ? "多頭 ↑" : "空頭 ↓"} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
-              </Section>
-              <Section title="KDJ (9,3,3)" color="#ffb300">
-                <IndRow label="K" value={indData.kdj?.k?.toFixed(2)} color="#ffb300" /><IndRow label="D" value={indData.kdj?.d?.toFixed(2)} color="#2962ff" /><IndRow label="J" value={indData.kdj?.j?.toFixed(2)} color="#e040fb" />
-                <IndRow label="信號" value={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "金叉 🟢" : "死叉 🔴"} color={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "#26a69a" : "#ef5350"} />
-              </Section>
-              <Section title="移動平均線 MA" color="#f0e68c">
-                {[[5, "#f0e68c"], [10, "#87ceeb"], [20, "#ff8c69"], [60, "#da70d6"]].map(([p, col]) => <IndRow key={p} label={`MA${p}`} value={indData[`ma${p}`]?.toFixed(p <= 10 ? 4 : 2)} color={col} />)}
-                <IndRow label="多空排列" value={(indData.ma5 || 0) > (indData.ma20 || 0) ? "多頭 ↑" : "空頭 ↓"} color={(indData.ma5 || 0) > (indData.ma20 || 0) ? "#26a69a" : "#ef5350"} />
-              </Section>
-            </>}
 
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+            {/* SMC */}
             {sideTab === "smc" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
@@ -744,19 +465,24 @@ export default function App() {
               </div>
               {smc ? <>
                 <div style={{ background: `${smc.color}14`, border: `1px solid ${smc.color}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
-                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>SMC 綜合訊號 · {selected?.symbol}</div>
+                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>SMC 綜合訊號 · {selected?.symbol} · {tf}</div>
                   <div style={{ color: smc.color, fontSize: 26, fontWeight: 800, fontFamily: "monospace", letterSpacing: 1 }}>{smc.signal}</div>
                   <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${smc.confidence}%`, height: "100%", background: smc.color }} /></div>
                   <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {smc.confidence}%</div>
                 </div>
                 <Section title="多時區 SMC 結構" color="#26a69a" badge="MTF">
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {smcMulti.map(({ tf: t, result: r }) => { const sig = r ? r.signal : "資料不足"; const col = r ? r.color : "#4a5568"; return (
-                      <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", background: "#0d1520", borderRadius: 6, border: `1px solid ${r ? col + "44" : "#1a2535"}` }}>
-                        <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, width: 36 }}>{t}</span>
-                        <span style={{ color: col, fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 64 }}>{sig}</span>
-                        {r && <><span style={{ flex: 1, color: "#4a5568", fontSize: 9, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.structure}</span><span style={{ color: col, fontSize: 9, fontFamily: "monospace" }}>{r.confidence}%</span></>}
-                      </div>); })}
+                    {smcMulti.map(({ tf: t, result: r }) => {
+                      const sig = r ? r.signal : "資料不足";
+                      const col = r ? r.color : "#4a5568";
+                      return (
+                        <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", background: "#0d1520", borderRadius: 6, border: `1px solid ${r ? col + "44" : "#1a2535"}` }}>
+                          <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, width: 36 }}>{t}</span>
+                          <span style={{ color: col, fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 64 }}>{sig}</span>
+                          {r && <><span style={{ flex: 1, color: "#4a5568", fontSize: 9, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.structure}</span><span style={{ color: col, fontSize: 9, fontFamily: "monospace" }}>{r.confidence}%</span></>}
+                        </div>
+                      );
+                    })}
                   </div>
                 </Section>
                 <Section title="市場結構" color="#58a6ff">
@@ -771,64 +497,73 @@ export default function App() {
               </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
             </>}
 
+            {/* AI 多派系 */}
             {sideTab === "ai" && <>
-              {(() => {
-                // 優先顯示 aiDeep（含期貨資料），沒有則用基本 ai
-                const a = aiDeep || ai;
-                if (!a) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在計算 AI 綜合分析...</div>;
-                const x = aiDeep?.extra;
-                return <>
-                  <div style={{ background: `${a.color}14`, border: `1px solid ${a.color}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
-                    <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>AI 深度分析 · {selected?.symbol} {aiDeepLoading && <span style={{ color: "#f0b90b" }}>· 載入期貨資料中...</span>}</div>
-                    <div style={{ fontSize: 26, fontWeight: 800, color: a.color, fontFamily: "monospace" }}>{a.emoji} {a.direction}</div>
-                    <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${a.confidence}%`, height: "100%", background: a.color }} /></div>
-                    <div style={{ color: a.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {a.confidence}% · 分數 {a.score > 0 ? "+" : ""}{a.score}</div>
+              {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
+              {multiAI && (() => {
+                const consensus = multiAI[multiAI.length - 1]; // 最後一個是整合派
+                return (
+                  <div style={{ background: `${consensus.color}14`, border: `1.5px solid ${consensus.color}`, borderRadius: 12, padding: 14, marginBottom: 12, textAlign: "center" }}>
+                    <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識摘要 · {selected?.symbol}</div>
+                    <div style={{ fontSize: 24, fontWeight: 800, color: consensus.color, fontFamily: "monospace" }}>{consensus.emoji} {consensus.direction}</div>
+                    <div style={{ color: consensus.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {consensus.confidence}%</div>
+                    <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 6 }}>
+                      {(() => {
+                        const others = multiAI.slice(0, -1);
+                        const longs = others.filter((a) => a.direction.includes("做多")).length;
+                        const shorts = others.filter((a) => a.direction.includes("做空")).length;
+                        const wait = others.filter((a) => a.direction === "觀望").length;
+                        return `${longs} 做多 · ${shorts} 做空 · ${wait} 觀望`;
+                      })()}
+                    </div>
                   </div>
-                  <Section title="AI 摘要" color={a.color}>
-                    <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.7 }}>{a.summary}</div>
-                  </Section>
-                  <Section title="交易計畫建議" color="#58a6ff" badge={`R/R ${a.plan.rr}`}>
-                    <IndRow label="方向" value={a.plan.isLong ? "做多" : "做空"} color={a.plan.isLong ? "#26a69a" : "#ef5350"} />
-                    <IndRow label="進場參考" value={fmtPr(a.plan.entry)} />
-                    <IndRow label="止損" value={fmtPr(a.plan.stop)} color="#ef5350" />
-                    <IndRow label="目標 1 (2R)" value={fmtPr(a.plan.target1)} color="#26a69a" />
-                    <IndRow label="目標 2 (4R)" value={fmtPr(a.plan.target2)} color="#26a69a" />
-                    <IndRow label="ATR (波動)" value={fmtPr(a.plan.atr)} color="#f0e68c" />
-                  </Section>
-                  {x && x.funding && <Section title="期貨資金面" color="#f0b90b" badge="Binance Futures">
-                    <IndRow label="資金費率" value={`${(x.funding.funding * 100).toFixed(4)}%`} color={x.funding.funding > 0.0005 ? "#ef5350" : x.funding.funding < -0.0002 ? "#26a69a" : "#c9d1d9"} />
-                    <IndRow label="標記價" value={fmtPr(x.funding.markPrice)} />
-                    {x.oi && <IndRow label="當前 OI" value={fmtVol(x.oi.oi) + " 張"} />}
-                    {x.oiChg != null && <IndRow label="OI 1H 變化" value={`${x.oiChg > 0 ? "+" : ""}${x.oiChg.toFixed(2)}%`} color={x.oiChg > 0 ? "#26a69a" : "#ef5350"} />}
-                  </Section>}
-                  {x && (x.globalLS || x.topLS) && <Section title="多空情緒" color="#a78bfa" badge="散戶 vs 大戶">
-                    {x.globalLS && <>
-                      <IndRow label="散戶多空比" value={x.globalLS.ratio.toFixed(2)} color={x.globalLS.ratio > 1.3 ? "#ef5350" : x.globalLS.ratio < 0.8 ? "#26a69a" : "#c9d1d9"} />
-                      <IndRow label="散戶多/空" value={`${x.globalLS.longPct.toFixed(0)}% / ${x.globalLS.shortPct.toFixed(0)}%`} />
-                    </>}
-                    {x.topLS && <>
-                      <IndRow label="大戶多空比" value={x.topLS.ratio.toFixed(2)} color={x.topLS.ratio > 1.2 ? "#26a69a" : x.topLS.ratio < 0.85 ? "#ef5350" : "#c9d1d9"} />
-                      <IndRow label="大戶多/空" value={`${x.topLS.longPct.toFixed(0)}% / ${x.topLS.shortPct.toFixed(0)}%`} />
-                    </>}
-                  </Section>}
-                  {x && x.taker && <Section title="Taker CVD 資金流向" color="#58a6ff" badge="近30分">
-                    <IndRow label="主動買賣比" value={x.taker.ratio.toFixed(2)} color={x.taker.ratio > 1.1 ? "#26a69a" : x.taker.ratio < 0.9 ? "#ef5350" : "#c9d1d9"} />
-                    <IndRow label="趨勢" value={x.taker.trend} color={x.taker.cvdRecent > 0 ? "#26a69a" : x.taker.cvdRecent < 0 ? "#ef5350" : "#c9d1d9"} />
-                    <IndRow label="CVD 累積" value={fmtVol(Math.abs(x.taker.cvdRecent))} color={x.taker.cvdRecent > 0 ? "#26a69a" : "#ef5350"} />
-                  </Section>}
-                  {x && x.rsBTC && selected?.name !== "BTC" && <Section title="相對強弱 vs BTC" color="#ffb300" badge="24h">
-                    <IndRow label={`${selected?.name} 24h`} value={`${x.rsBTC.coinChg > 0 ? "+" : ""}${x.rsBTC.coinChg.toFixed(2)}%`} color={x.rsBTC.coinChg > 0 ? "#26a69a" : "#ef5350"} />
-                    <IndRow label="BTC 24h" value={`${x.rsBTC.btcChg > 0 ? "+" : ""}${x.rsBTC.btcChg.toFixed(2)}%`} />
-                    <IndRow label="超額表現" value={`${x.rsBTC.rs > 0 ? "+" : ""}${x.rsBTC.rs.toFixed(2)}% (${x.rsBTC.label})`} color={x.rsBTC.rs > 2 ? "#26a69a" : x.rsBTC.rs < -2 ? "#ef5350" : "#c9d1d9"} />
-                  </Section>}
-                  <Section title="分析因子明細" color="#a78bfa" defaultOpen={false}>
-                    {a.factors.map((f, i) => <IndRow key={i} label={f.k} value={f.v} color={f.side === "bull" ? "#26a69a" : f.side === "bear" ? "#ef5350" : "#c9d1d9"} />)}
-                  </Section>
-                  <div style={{ background: "#130a0a", border: "1px solid #2a1010", borderRadius: 8, padding: 10 }}><div style={{ color: "#5a2020", fontSize: 9, lineHeight: 1.6 }}>⚠️ {a.risk}</div></div>
-                </>;
+                );
               })()}
+              {multiAI && <Section title="5 個 AI 派系觀點" color="#a78bfa" defaultOpen={true}>
+                {multiAI.map((ai, i) => <AICard key={i} ai={ai} defaultOpen={i === multiAI.length - 1} />)}
+              </Section>}
+              {aiDeep && <Section title="AI 深度分析（含期貨資金面）" color={aiDeep.color} defaultOpen={false} badge={`R/R ${aiDeep.plan.rr}`}>
+                <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.7, marginBottom: 8 }}>{aiDeep.summary}</div>
+                <IndRow label="方向" value={aiDeep.plan.isLong ? "做多" : "做空"} color={aiDeep.plan.isLong ? "#26a69a" : "#ef5350"} />
+                <IndRow label="進場參考" value={fmtPr(aiDeep.plan.entry)} />
+                <IndRow label="止損" value={fmtPr(aiDeep.plan.stop)} color="#ef5350" />
+                <IndRow label="目標 1 (2R)" value={fmtPr(aiDeep.plan.target1)} color="#26a69a" />
+                <IndRow label="目標 2 (4R)" value={fmtPr(aiDeep.plan.target2)} color="#26a69a" />
+                {aiDeep.extra?.funding && <IndRow label="資金費率" value={`${(aiDeep.extra.funding.funding * 100).toFixed(4)}%`} />}
+                {aiDeep.extra?.oiChg != null && <IndRow label="OI 1H 變化" value={`${aiDeep.extra.oiChg > 0 ? "+" : ""}${aiDeep.extra.oiChg.toFixed(2)}%`} color={aiDeep.extra.oiChg > 0 ? "#26a69a" : "#ef5350"} />}
+                {aiDeep.extra?.topLS && <IndRow label="大戶多空比" value={aiDeep.extra.topLS.ratio.toFixed(2)} color={aiDeep.extra.topLS.ratio > 1.2 ? "#26a69a" : aiDeep.extra.topLS.ratio < 0.85 ? "#ef5350" : "#c9d1d9"} />}
+              </Section>}
+              <div style={{ background: "#130a0a", border: "1px solid #2a1010", borderRadius: 8, padding: 10, marginTop: 8 }}>
+                <div style={{ color: "#5a2020", fontSize: 9, lineHeight: 1.6 }}>⚠️ 多 AI 分析整合不同演算法派系與期貨資金面，僅供參考。實際交易請結合資金管理與風險控制。</div>
+              </div>
             </>}
 
+            {/* 指標 */}
+            {sideTab === "indicators" && indData && <>
+              <Section title="RSI (14)" color="#a78bfa">
+                <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
+                <IndRow label="區間狀態" value={indData.rsi > 70 ? "超買 ⚠️" : indData.rsi < 30 ? "超賣 🟢" : "中性"} />
+                <div style={{ marginTop: 6, height: 3, borderRadius: 2, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${Math.min(100, indData.rsi || 0)}%`, height: "100%", background: indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#a78bfa" }} /></div>
+              </Section>
+              <Section title="MACD (12,26,9)" color="#2962ff">
+                <IndRow label="MACD" value={indData.macd?.toFixed(4)} />
+                <IndRow label="Signal" value={indData.signal?.toFixed(4)} />
+                <IndRow label="Histogram" value={indData.hist?.toFixed(4)} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
+                <IndRow label="趨勢" value={(indData.hist || 0) > 0 ? "多頭 ↑" : "空頭 ↓"} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
+              </Section>
+              <Section title="KDJ (9,3,3)" color="#ffb300">
+                <IndRow label="K" value={indData.kdj?.k?.toFixed(2)} color="#ffb300" />
+                <IndRow label="D" value={indData.kdj?.d?.toFixed(2)} color="#2962ff" />
+                <IndRow label="J" value={indData.kdj?.j?.toFixed(2)} color="#e040fb" />
+                <IndRow label="信號" value={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "金叉 🟢" : "死叉 🔴"} color={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "#26a69a" : "#ef5350"} />
+              </Section>
+              <Section title="移動平均線 MA" color="#f0e68c">
+                {[[5, "#f0e68c"], [10, "#87ceeb"], [20, "#ff8c69"], [60, "#da70d6"]].map(([p, col]) => <IndRow key={p} label={`MA${p}`} value={indData[`ma${p}`]?.toFixed(p <= 10 ? 4 : 2)} color={col} />)}
+                <IndRow label="多空排列" value={(indData.ma5 || 0) > (indData.ma20 || 0) ? "多頭 ↑" : "空頭 ↓"} color={(indData.ma5 || 0) > (indData.ma20 || 0) ? "#26a69a" : "#ef5350"} />
+              </Section>
+            </>}
+
+            {/* 推薦 */}
             {sideTab === "recs" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -871,6 +606,7 @@ export default function App() {
               </>}
             </>}
 
+            {/* 警報 */}
             {sideTab === "alerts" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
@@ -894,29 +630,33 @@ export default function App() {
               </Section>
               <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
                 <p style={{ color: "#787b86", marginBottom: 4 }}>判讀說明：</p>
-                <p>· <span style={{ color: "#26a69a" }}>多頭觸發</span>：OI 暴增 + 價漲，買單建倉</p>
-                <p>· <span style={{ color: "#ef5350" }}>空頭觸發</span>：OI 暴增 + 價跌，賣單建倉</p>
-                <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌，可能誘導空單進場</p>
-                <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升，多頭已減倉但漲不停</p>
+                <p>· <span style={{ color: "#26a69a" }}>多頭觸發</span>：OI 暴增 + 價漲</p>
+                <p>· <span style={{ color: "#ef5350" }}>空頭觸發</span>：OI 暴增 + 價跌</p>
+                <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌</p>
+                <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升</p>
               </div>
             </>}
 
+            {/* 回測 */}
             {sideTab === "backtest" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                   <div>
                     <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>SMC 策略回測</div>
-                    <div style={{ color: "#4a5568", fontSize: 9 }}>{selected?.symbol} · 進場 ATR 止損 1.5x / 目標 2x</div>
+                    <div style={{ color: "#4a5568", fontSize: 9 }}>{selected?.symbol}</div>
                   </div>
                   <div style={{ display: "flex", gap: 4 }}>
-                    {["15m", "1H", "4H", "1D"].map((t) => (
-                      <button key={t} onClick={() => setBtTf(t)} style={{ background: btTf === t ? "#0f1e2e" : "transparent", border: `1px solid ${btTf === t ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: btTf === t ? "#58a6ff" : "#8b949e", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>{t}</button>
-                    ))}
+                    <button onClick={() => setBtMode("mtf")} style={{ background: btMode === "mtf" ? "#0f1e2e" : "transparent", border: `1px solid ${btMode === "mtf" ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: btMode === "mtf" ? "#58a6ff" : "#8b949e", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>高勝率版</button>
+                    <button onClick={() => setBtMode("simple")} style={{ background: btMode === "simple" ? "#0f1e2e" : "transparent", border: `1px solid ${btMode === "simple" ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: btMode === "simple" ? "#58a6ff" : "#8b949e", padding: "3px 8px", fontSize: 10, fontFamily: "monospace" }}>基本版</button>
                   </div>
                 </div>
+                <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6 }}>
+                  {btMode === "mtf" ? "策略：1D 趨勢 + 4H ADX>20 + 4H 方向一致 + 1H SMC ≥50% + 量能確認" : "策略：1H SMC ≥30% 訊號 → ATR 止損/止盈"}
+                </div>
               </div>
-              {btLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>回測中...</div>}
-              {!btLoading && btResult && btResult.stats.total === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>歷史資料中沒有產生交易訊號</div>}
+              {btLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>{btMode === "mtf" ? "高勝率回測中，需要載入 1D+4H+1H 三套 K 線，約 10-15 秒..." : "回測中..."}</div>}
+              {!btLoading && btResult === null && btMode === "mtf" && <div style={{ color: "#5a4020", fontSize: 10, lineHeight: 1.6, padding: "10px", background: "#1a1206", borderRadius: 6 }}>⚠️ K 線資料不足，無法進行多時區回測（需要至少 50 根 1D + 4H K 線）</div>}
+              {!btLoading && btResult && btResult.stats.total === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>歷史資料中沒有達到所有條件的進場訊號（這是嚴格策略的正常現象）</div>}
               {!btLoading && btResult && btResult.stats.total > 0 && <>
                 <div style={{ background: `${btResult.stats.totalPnl >= 0 ? "#26a69a" : "#ef5350"}14`, border: `1px solid ${btResult.stats.totalPnl >= 0 ? "#26a69a" : "#ef5350"}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
                   <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>總損益（累積 %）</div>
@@ -935,7 +675,7 @@ export default function App() {
                 <Section title="累積績效曲線" color="#a78bfa">
                   {(() => {
                     const eq = btResult.equity;
-                    if (eq.length < 2) return <div style={{ color: "#4a5568", fontSize: 10 }}>資料不足</div>;
+                    if (eq.length < 2) return <div style={{ color: "#4a5568", fontSize: 10 }}>資料不足（需 2 筆以上交易）</div>;
                     const W = 260, H = 80, PAD = 4;
                     const cums = eq.map((e) => e.cum);
                     const mn = Math.min(0, ...cums), mx = Math.max(0, ...cums);
@@ -967,49 +707,55 @@ export default function App() {
                   ))}
                 </Section>
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
-                  <p style={{ color: "#787b86", marginBottom: 4 }}>回測說明：</p>
-                  <p>· 進場：SMC 訊號（做多/做空，信心 ≥ 30%）</p>
-                  <p>· 止損：1.5 × ATR；目標：2 × ATR（R/R 1.33）</p>
-                  <p>· 最多持有 30 根 K 棒（時間止損）</p>
-                  <p>· 過去績效不保證未來表現</p>
+                  <p style={{ color: "#787b86", marginBottom: 4 }}>{btMode === "mtf" ? "高勝率策略：" : "基本策略："}</p>
+                  {btMode === "mtf" ? <>
+                    <p>· 1D 結構確認趨勢方向</p>
+                    <p>· 4H ADX > 20 確認趨勢有力</p>
+                    <p>· 4H 方向必須跟 1D 一致</p>
+                    <p>· 1H SMC 訊號信心 ≥ 50%</p>
+                    <p>· 量能 ≥ 20日均量 0.7 倍</p>
+                    <p>· 止損 1.5×ATR / 目標 3×ATR (R/R = 2.0)</p>
+                    <p>· 1D 結構翻轉自動平倉</p>
+                  </> : <>
+                    <p>· 進場：SMC 訊號（信心 ≥ 30%）</p>
+                    <p>· 止損 1.5×ATR / 目標 2×ATR (R/R = 1.33)</p>
+                  </>}
+                  <p style={{ marginTop: 4, color: "#5a4020" }}>· 過去績效不保證未來表現</p>
                 </div>
               </>}
             </>}
 
-            {sideTab === "jin10" && <>
-              <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
-                <FeedState state={j10flash}>
-                  {Array.isArray(j10flash) && j10flash.map((n, i) => (
-                    <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
-                      <div style={{ display: "flex", gap: 7 }}>
-                        <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
-                        <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
-                      </div>
+            {/* 金十 */}
+            {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
+              <FeedState state={j10flash}>
+                {Array.isArray(j10flash) && j10flash.map((n, i) => (
+                  <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
+                    <div style={{ display: "flex", gap: 7 }}>
+                      <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
+                      <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
                     </div>
-                  ))}
-                </FeedState>
-              </Section>
-            </>}
+                  </div>
+                ))}
+              </FeedState>
+            </Section>}
 
+            {/* 說明 */}
             {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
               <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📡 資料來源</p>
-              <p>加密貨幣：Binance / OKX / CoinGecko（K 線 + WebSocket 即時推送）</p>
-              <p>美股：Finnhub</p>
-              <p>台股：FinMind</p>
-              <p>外匯 / 指數 / 商品：Twelve Data</p>
+              <p>加密貨幣：Binance + OKX + CoinGecko 合併（幾百個幣）</p>
+              <p>期貨資料：Binance Futures（資金費率/OI/多空比/Taker CVD）</p>
+              <p>K 線：Binance WebSocket 即時</p>
               <p>財經訊息：金十數據</p>
-              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🎨 K 線繪圖</p>
-              <p>選工具 → 在 K 線上按住拖曳即可畫趨勢線、水平線、矩形。重整不會消失，每個商品/時間框架各自保留。</p>
-              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 AI 分析</p>
-              <p>整合 SMC 多時區共振、趨勢強度、均線排列、量能、波動率（ATR），給出綜合多空判斷與交易計畫建議（進場 / 止損 / 目標）。</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 5 個 AI 派系</p>
+              <p>🏃 趨勢跟隨 | 🔁 均值回歸 | 🏛️ SMC 機構 | 💰 期貨情緒 | 🧠 整合共識</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
+              <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
+              <p>每 5 分鐘掃 200 大幣推薦清單；每 3 分鐘掃 OI 異常警報。</p>
             </div>}
           </div>
-        </div>}
+        </div>
       </div>
-
-      {isMobile && <div style={{ display: "flex", background: "#0a0f18", borderTop: "1px solid #1a2535", flexShrink: 0 }}>
-        {[["chart", "📈 K線圖"], ["panel", "📊 分析"]].map(([id, label]) => <button key={id} onClick={() => setMobileView(id)} style={{ flex: 1, background: mobileView === id ? "#0f1e2e" : "transparent", border: "none", borderTop: `2px solid ${mobileView === id ? "#58a6ff" : "transparent"}`, color: mobileView === id ? "#58a6ff" : "#4a5568", padding: "12px 0", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>)}
-      </div>}
     </div>
   );
 }
