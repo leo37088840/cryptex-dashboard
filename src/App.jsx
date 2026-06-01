@@ -6,81 +6,87 @@ import {
   scanRecommendations, scanAnomalies,
 } from "./data.js";
 
+const INTERVALS = ["15m", "1H", "4H", "1D"];
 
 function useIsMobile() {
   const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth < 760 : false);
   useEffect(() => {
-    const r = () => setM(window.innerWidth < 760);
-    window.addEventListener("resize", r);
-    return () => window.removeEventListener("resize", r);
+    const f = () => setM(window.innerWidth < 760);
+    window.addEventListener("resize", f); f();
+    return () => window.removeEventListener("resize", f);
   }, []);
   return m;
 }
 
-function Section({ title, color, children, defaultOpen = true, badge }) {
+function Section({ title, color = "#58a6ff", badge, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ marginBottom: 10, background: "#0a0e15", border: "1px solid #1a2535", borderRadius: 8, overflow: "hidden" }}>
-      <button onClick={() => setOpen(!open)} style={{ width: "100%", background: "transparent", border: "none", padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", color: "#e6edf3" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 3, height: 14, background: color, borderRadius: 2 }} />
-          <span style={{ color: "#e6edf3", fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>{title}</span>
-          {badge && <span style={{ background: `${color}22`, color: color, fontSize: 9, fontFamily: "monospace", padding: "1px 5px", borderRadius: 3 }}>{badge}</span>}
+    <div style={{ border: "1px solid #1a2535", borderRadius: 8, overflow: "hidden", marginBottom: 8 }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "#0d1520", border: "none", borderBottom: open ? "1px solid #1a2535" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />
+          <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{title}</span>
+          {badge && <span style={{ background: color + "22", color, fontSize: 9, padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>{badge}</span>}
         </div>
-        <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▼" : "▶"}</span>
+        <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
       </button>
-      {open && <div style={{ padding: "0 12px 10px" }}>{children}</div>}
+      {open && <div style={{ padding: 12 }}>{children}</div>}
     </div>
   );
 }
-
 function IndRow({ label, value, color }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #111824", fontSize: 11 }}>
-      <span style={{ color: "#787b86", fontFamily: "monospace" }}>{label}</span>
-      <span style={{ color: color || "#c9d1d9", fontFamily: "monospace", fontWeight: 600 }}>{value}</span>
-    </div>
-  );
+  return <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+    <span style={{ color: "#4a5568", fontSize: 10, fontFamily: "monospace" }}>{label}</span>
+    <span style={{ color: color || "#c9d1d9", fontSize: 10, fontFamily: "monospace", fontWeight: 600 }}>{value ?? "—"}</span>
+  </div>;
 }
-
-function FeedState({ state, children }) {
-  if (state === undefined) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>載入中...</div>;
-  if (state === null) return <div style={{ color: "#5a4020", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>暫無資料</div>;
-  if (Array.isArray(state) && state.length === 0) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>暫無內容</div>;
+function FeedState({ state, empty, children }) {
+  if (state === undefined) return <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "10px 4px", textAlign: "center" }}>連線中...</div>;
+  if (state === null) return <div style={{ color: "#5a4020", fontSize: 10, lineHeight: 1.6, padding: "8px", background: "#1a1206", borderRadius: 6 }}>⚠️ 來源暫時無法連線，稍後自動恢復。</div>;
+  if (Array.isArray(state) && state.length === 0) return <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>{empty || "目前無資料"}</div>;
   return children;
 }
-
 function fmtFeedTime(t) {
   if (!t) return "";
-  if (typeof t === "string" && /^\d{2}:\d{2}/.test(t)) return t.slice(0, 5);
-  try { return new Date(t).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false }); } catch { return ""; }
+  let d;
+  if (typeof t === "number") d = new Date(t < 1e12 ? t * 1000 : t);
+  else d = new Date(t);
+  if (isNaN(d.getTime())) return String(t).slice(0, 16);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+const SearchInput = ({ value, onChange }) => (
+  <input
+    value={value}
+    onChange={(e) => onChange(e.target.value)}
+    placeholder="搜尋..."
+    style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }}
+  />
+);
 
 function AICard({ ai, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
+  if (!ai) return null;
   return (
-    <div style={{ background: `${ai.color}10`, border: `1px solid ${ai.color}44`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
-      <button onClick={() => setOpen(!open)} style={{ width: "100%", background: "transparent", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 16 }}>{ai.emoji}</span>
-          <div style={{ textAlign: "left" }}>
-            <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ai.name}</div>
-            <div style={{ color: "#787b86", fontSize: 9 }}>{ai.school}</div>
-          </div>
+    <div style={{ border: `1px solid ${ai.color}55`, background: `${ai.color}0a`, borderRadius: 8, marginBottom: 6, overflow: "hidden" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "transparent", border: "none", padding: "8px 10px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+        <span style={{ fontSize: 16 }}>{ai.emoji}</span>
+        <div style={{ flex: 1, textAlign: "left" }}>
+          <div style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ai.name}</div>
+          <div style={{ color: ai.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{ai.direction} · {ai.confidence}%</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{ color: ai.color, fontSize: 12, fontFamily: "monospace", fontWeight: 800 }}>{ai.direction}</div>
-          <div style={{ color: ai.color, fontSize: 10, fontFamily: "monospace" }}>{ai.confidence}%</div>
-          <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▼" : "▶"}</span>
+        <div style={{ width: 60, height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden", marginRight: 6 }}>
+          <div style={{ width: `${ai.confidence}%`, height: "100%", background: ai.color }} />
         </div>
+        <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
       </button>
-      {open && <div style={{ marginTop: 8, color: "#8b949e", fontSize: 10, lineHeight: 1.7, fontFamily: "monospace" }}>
-        {ai.reasons.map((r, i) => <div key={i}>· {r}</div>)}
+      {open && <div style={{ padding: "0 10px 10px", borderTop: "1px solid #1a2535" }}>
+        {ai.reasons.map((r, i) => (
+          <div key={i} style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.6, padding: "2px 0" }}>· {r}</div>
+        ))}
       </div>}
     </div>
   );
 }
-
 export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
@@ -102,60 +108,77 @@ export default function App() {
   const [alerts, setAlerts] = useState([]);
   const [listLimit, setListLimit] = useState(50);
 
+  const lastSig = { current: null };
+
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return coins;
-    return coins.filter((c) => (c.symbol + c.name + (c.label || "")).toLowerCase().includes(q));
-  }, [coins, search]);
+    if (!search) return coins;
+    const q = search.toUpperCase();
+    return coins.filter((c) => c.name.toUpperCase().includes(q) || (c.symbol || "").toUpperCase().includes(q) || (c.label || "").toUpperCase().includes(q));
+  }, [search, coins]);
+  const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
   useEffect(() => {
     let cancel = false;
-    setStatus("載入中...");
-    loadMarket().then((d) => {
+    async function run() {
+      const list = await loadMarket("crypto");
       if (cancel) return;
-      setCoins(d);
-      if (!selected && d.length) setSelected(d[0]);
-      setStatus(`✓ ${d.length} 個合約`);
-    }).catch((e) => setStatus("✗ 載入失敗: " + e.message));
-    return () => { cancel = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      setCoins(list);
+      setStatus(list.length > 0 ? `${list.length} 商品 · 即時` : `來源連線中`);
+      setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
+    }
+    run();
+    if (search) return () => { cancel = true; };
+    const iv = setInterval(run, 30000);
+    return () => { cancel = true; clearInterval(iv); };
+  }, [search]);
 
   useEffect(() => {
-    const iv = setInterval(() => { loadMarket().then(setCoins).catch(() => {}); }, 60_000);
-    return () => clearInterval(iv);
-  }, []);
-
-  useEffect(() => {
-    loadJin10Flash().then(setJ10flash).catch(() => setJ10flash(null));
-    const iv = setInterval(() => { loadJin10Flash().then(setJ10flash).catch(() => {}); }, 60_000);
-    return () => clearInterval(iv);
+    let cancel = false;
+    async function run() { const r = await loadJin10Flash(); if (!cancel) setJ10flash(r); }
+    run(); const iv = setInterval(run, 60000);
+    return () => { cancel = true; clearInterval(iv); };
   }, []);
 
   useEffect(() => {
     if (!selected) return;
     let cancel = false;
-    loadKlines(selected, tf).then((d) => { if (!cancel) setCandles(d); }).catch(() => {});
-    return () => { cancel = true; };
+    setCandles([]);
+    loadKlines(selected, tf).then((k) => { if (!cancel && k && k.length) setCandles(k); });
+    const iv = setInterval(() => {
+      loadKlines(selected, tf).then((k) => {
+        if (cancel || !k || !k.length) return;
+        setCandles((prev) => (prev.length && k[k.length - 1].t === prev[prev.length - 1].t ? prev : k));
+      });
+    }, 60000);
+    return () => { cancel = true; clearInterval(iv); };
   }, [selected, tf]);
 
+  const lastCandleT = candles.length > 0 ? candles[candles.length - 1].t : 0;
   useEffect(() => {
-    setListLimit(50);
-  }, [search]);
+    if (candles.length < 40 || !selected) { setSmc(null); return; }
+    const r = analyzeSMC(candles); setSmc(r);
+    if (r) {
+      const isDir = r.signal.includes("做多") || r.signal.includes("做空");
+      const key = `${selected.symbol}-${r.signal}`;
+      if (isDir && lastSig.current !== key) {
+        lastSig.current = key;
+        const p = { signal: r.signal, color: r.color, symbol: selected.symbol, ts: Date.now(), confidence: r.confidence };
+        setNotif(p);
+        if (notifOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try { new Notification(`📊 ${selected.symbol} SMC 訊號`, { body: `${r.signal}｜信心 ${r.confidence}%` }); } catch {}
+        }
+        setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastCandleT, selected, notifOn]);
 
   useEffect(() => {
-    if (!candles.length) { setSmc(null); return; }
-    setSmc(analyzeSMC(candles));
-  }, [candles]);
-
-  useEffect(() => {
-    if (!selected) { setSmcMulti([]); return; }
-    let cancel = false;
+    if (!selected) return; let cancel = false;
     analyzeSMCMulti(selected).then((r) => { if (!cancel) setSmcMulti(r); });
     return () => { cancel = true; };
   }, [selected]);
 
-  // 多週期漲跌
   useEffect(() => {
     if (!selected) { setPeriodChg(null); return; }
     let cancel = false;
@@ -164,7 +187,6 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
-  // Trade WebSocket（即時價）
   useEffect(() => {
     if (!selected || selected.cat !== "crypto") return;
     let lastTs = 0;
@@ -187,7 +209,6 @@ export default function App() {
     return () => off();
   }, [selected]);
 
-  // 推薦掃描
   const coinsLoaded = coins.length > 0;
   useEffect(() => {
     if (sideTab !== "recs" || !coinsLoaded) return;
@@ -202,7 +223,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sideTab, coinsLoaded, recsTs]);
 
-  // 警報掃描
   useEffect(() => {
     if (!coinsLoaded) return;
     let cancel = false;
@@ -245,222 +265,98 @@ export default function App() {
   const up = change24h >= 0;
   const fmtPr = (v) => (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
   const fmtVol = (v) => {
-    if (!v) return "-";
+    if (!v || v <= 0) return "";
     if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
     if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
     if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
-    return v.toFixed(2);
+    return String(Math.round(v));
   };
-
-  // 顯示用 list（先 filtered，再 slice listLimit）
-  const displayCoins = filtered.slice(0, listLimit);
-  const hasMore = filtered.length > listLimit;
-
   return (
-    <div style={{ minHeight: "100vh", background: "#000", color: "#e6edf3", fontFamily: "-apple-system, system-ui, sans-serif" }}>
-      <div style={{ background: "linear-gradient(180deg, #0a0e15 0%, #000 100%)", borderBottom: "1px solid #1a2535", padding: "10px 14px", position: "sticky", top: 0, zIndex: 100 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ background: "linear-gradient(135deg, #ffce00, #ff6f00)", color: "#000", padding: "3px 8px", borderRadius: 4, fontWeight: 800, fontSize: 11, fontFamily: "monospace" }}>CRYPTEX</div>
-            <div style={{ color: "#4a5568", fontSize: 10, fontFamily: "monospace" }}>加密貨幣分析</div>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#070b10", color: "#c9d1d9", fontFamily: "system-ui,sans-serif", overflow: "hidden" }}>
+      <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:#1a2535;border-radius:2px}button{cursor:pointer;outline:none}@keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}`}</style>
+
+      {notif && (
+        <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, animation: "slideDown .35s ease-out", background: "#0d1520", border: `1.5px solid ${notif.color}`, color: notif.color, borderRadius: 12, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 30px rgba(0,0,0,.6)", maxWidth: "92vw" }}>
+          <div style={{ fontSize: 22 }}>{notif.signal.includes("做多") ? "📈" : "📉"}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", gap: 8 }}><span style={{ color: "#e6edf3", fontSize: 13, fontWeight: 700, fontFamily: "monospace" }}>{notif.symbol}</span><span style={{ color: notif.color, fontSize: 14, fontWeight: 800, fontFamily: "monospace" }}>{notif.signal}</span></div>
+            <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace" }}>SMC 訊號 · 信心 {notif.confidence}% · {new Date(notif.ts).toLocaleTimeString()}</div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{status}</span>
-            <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 4, color: "#fff", padding: "3px 7px", fontSize: 10, cursor: "pointer", fontFamily: "monospace" }}>{notifOn ? "🔔 ON" : "🔔 OFF"}</button>
-          </div>
+          <button onClick={() => setNotif(null)} style={{ background: "transparent", border: "none", color: "#4a5568", fontSize: 18 }}>×</button>
         </div>
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 BTC ETH SOL DOGE ..." style={{ width: "100%", background: "#0a0e15", border: "1px solid #1a2535", borderRadius: 6, color: "#e6edf3", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box", fontFamily: "monospace" }} />
-      </div>
+      )}
 
-      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", maxWidth: 1500, margin: "0 auto", gap: isMobile ? 0 : 10, padding: isMobile ? 0 : 10 }}>
-        <div style={{ flex: isMobile ? "none" : "0 0 320px", maxWidth: isMobile ? "100%" : 320, width: isMobile ? "100%" : 320 }}>
-          <div style={{ background: "#0a0e15", border: isMobile ? "none" : "1px solid #1a2535", borderRadius: isMobile ? 0 : 8 }}>
-            <div style={{ padding: "10px 12px", borderBottom: "1px solid #1a2535", color: "#787b86", fontSize: 11, fontFamily: "monospace", display: "flex", justifyContent: "space-between" }}>
-              <span>📊 加密貨幣合約</span>
-              <span style={{ color: "#4a5568" }}>{filtered.length}</span>
-            </div>
-            <div style={{ maxHeight: isMobile ? 380 : "calc(100vh - 220px)", overflowY: "auto" }}>
-              {displayCoins.map((it) => {
-                const sel = selected?.symbol === it.symbol;
-                const chg = it.change || 0;
-                const positive = chg >= 0;
-                const bg = sel ? "#0d1520" : positive ? "rgba(38,166,154,0.04)" : "rgba(239,83,80,0.04)";
-                return (
-                  <button key={`${it.symbol}-${it.binanceSymbol}`} onClick={() => setSelected(it)} style={{ width: "100%", background: bg, borderTop: "none", borderLeft: sel ? "3px solid #58a6ff" : "3px solid transparent", borderRight: "none", borderBottom: "1px solid #111824", padding: "8px 10px", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <div style={{ flex: 1, overflow: "hidden" }}>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                        <span style={{ color: "#e6edf3", fontSize: 12, fontWeight: 700, fontFamily: "monospace" }}>{it.symbol}</span>
-                        <span style={{ color: positive ? "#26a69a" : "#ef5350", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{fmtPr(it.price)}</span>
-                      </div>
-                      <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 1 }}>VOL ${fmtVol(it.quoteVolume)} · {it.label || it.name}</div>
-                    </div>
-                    <div style={{ background: positive ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 10, fontFamily: "monospace", fontWeight: 700, padding: "3px 6px", borderRadius: 3, minWidth: 50, textAlign: "center" }}>{positive ? "+" : ""}{chg.toFixed(2)}%</div>
-                  </button>
-                );
-              })}
-              {hasMore && <button onClick={() => setListLimit((l) => l + 50)} style={{ width: "100%", background: "#0d1520", border: "none", borderTop: "1px solid #1a2535", color: "#58a6ff", padding: "10px", fontSize: 11, cursor: "pointer", fontFamily: "monospace" }}>↓ 載入更多（剩 {filtered.length - listLimit}）</button>}
-              {!hasMore && filtered.length > 50 && <div style={{ color: "#4a5568", fontSize: 9, padding: "8px", textAlign: "center" }}>—— 全部 {filtered.length} 個合約 ——</div>}
-            </div>
-          </div>
+      <div style={{ background: "#0a0f18", borderBottom: "1px solid #1a2535", padding: "0 14px", display: "flex", alignItems: "center", height: 46, gap: 14, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>₿</div>
+          <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, letterSpacing: 2, color: "#e6edf3" }}>CRYPTEX</span>
         </div>
-
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 10, padding: isMobile ? 10 : 0 }}>
-          <div style={{ background: "#0a0e15", border: "1px solid #1a2535", borderRadius: 8, padding: 12 }}>
-            {selected ? <>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
-                <div>
-                  <span style={{ color: "#e6edf3", fontSize: 18, fontWeight: 800, fontFamily: "monospace" }}>{selected.symbol}</span>
-                  <span style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", marginLeft: 8 }}>{selected.label || selected.name} ·  PERP</span>
-                </div>
-              </div>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-                <span style={{ fontSize: 24, fontWeight: 800, color: up ? "#26a69a" : "#ef5350", fontFamily: "monospace" }}>{fmtPr(displayPrice)}</span>
-                <span style={{ fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: up ? "#26a69a" : "#ef5350" }}>{up ? "+" : ""}{change24h.toFixed(2)}%</span>
-                <span style={{ color: "#4a5568", fontSize: 10, fontFamily: "monospace" }}>24H</span>
-              </div>
-              {periodChg && <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                {[["1D", periodChg["1D"]], ["3D", periodChg["3D"]], ["1W", periodChg["1W"]], ["1M", periodChg["1M"]]].filter(([_, v]) => v != null).map(([k, v]) => (
-                  <div key={k} style={{ background: v >= 0 ? "rgba(38,166,154,0.1)" : "rgba(239,83,80,0.1)", border: `1px solid ${v >= 0 ? "#26a69a44" : "#ef535044"}`, borderRadius: 4, padding: "3px 7px", fontSize: 10, fontFamily: "monospace" }}>
-                    <span style={{ color: "#787b86" }}>{k} </span>
-                    <span style={{ color: v >= 0 ? "#26a69a" : "#ef5350", fontWeight: 700 }}>{v >= 0 ? "+" : ""}{v.toFixed(2)}%</span>
-                  </div>
-                ))}
-              </div>}
-            </> : <span style={{ color: "#4a5568", fontSize: 11 }}>請選擇商品</span>}
-          </div>
-
-          <div style={{ background: "#0a0e15", border: "1px solid #1a2535", borderRadius: 8 }}>
-            <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexWrap: "wrap" }}>
-              {[["smc", "SMC"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
-                <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>
-              ))}
-            </div>
-            <div style={{ padding: 12 }}>
-              {/* SMC */}
-              {sideTab === "smc" && <>
-                {smc && <div style={{ background: `${smc.color}14`, border: `1.5px solid ${smc.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
-                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>SMC 訊號 · {tf}</div>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: smc.color, fontFamily: "monospace" }}>{smc.signal}</div>
-                  <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>信心 {smc.confidence}%</div>
-                </div>}
-                {smc && <Section title="關鍵原因" color="#a78bfa">
-                  {smc.reasons.map((r, i) => <div key={i} style={{ color: "#c9d1d9", fontSize: 11, padding: "5px 0", borderBottom: i < smc.reasons.length - 1 ? "1px solid #111824" : "none", lineHeight: 1.6 }}>· {r}</div>)}
-                </Section>}
-                <Section title="多時區共振" color="#58a6ff">
-                  {smcMulti.length > 0 ? smcMulti.map((m) => <IndRow key={m.tf} label={m.tf} value={m.signal} color={m.color} />) : <div style={{ color: "#4a5568", fontSize: 10 }}>掃描中...</div>}
-                </Section>
-                <Section title="時間框架" color="#f0e68c">
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {["15M", "1H", "4H", "1D"].map((t) => (
-                      <button key={t} onClick={() => setTf(t)} style={{ background: t === tf ? "#58a6ff" : "transparent", border: `1px solid ${t === tf ? "#58a6ff" : "#1a2535"}`, color: t === tf ? "#000" : "#c9d1d9", padding: "5px 10px", borderRadius: 4, fontSize: 10, fontFamily: "monospace", fontWeight: 700, cursor: "pointer" }}>{t}</button>
-                    ))}
-                  </div>
-                </Section>
-                {selected && <div style={{ background: "#130a0a", border: "1px solid #2a1010", borderRadius: 8, padding: 10, marginTop: 8 }}>
-                  <div style={{ color: "#5a2020", fontSize: 9, lineHeight: 1.6 }}>⚠️ 本資訊僅供參考，不構成投資建議</div>
-                </div>}
-              </>}
-
-              {sideTab === "indicators" && indData && <>
-                <Section title="RSI (14)" color="#a78bfa">
-                  <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
-                  <IndRow label="區間狀態" value={indData.rsi > 70 ? "超買 ⚠️" : indData.rsi < 30 ? "超賣 🟢" : "中性"} />
-                  <div style={{ marginTop: 6, height: 3, borderRadius: 2, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${Math.min(100, indData.rsi || 0)}%`, height: "100%", background: indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#a78bfa" }} /></div>
-                </Section>
-                <Section title="MACD (12,26,9)" color="#2962ff">
-                  <IndRow label="MACD" value={indData.macd?.toFixed(4)} />
-                  <IndRow label="Signal" value={indData.signal?.toFixed(4)} />
-                  <IndRow label="Histogram" value={indData.hist?.toFixed(4)} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
-                  <IndRow label="趨勢" value={(indData.hist || 0) > 0 ? "多頭 ↑" : "空頭 ↓"} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
-                </Section>
-                <Section title="KDJ (9,3,3)" color="#ffb300">
-                  <IndRow label="K" value={indData.kdj?.k?.toFixed(2)} color="#ffb300" />
-                  <IndRow label="D" value={indData.kdj?.d?.toFixed(2)} color="#2962ff" />
-                  <IndRow label="J" value={indData.kdj?.j?.toFixed(2)} color="#e040fb" />
-                  <IndRow label="信號" value={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "金叉 🟢" : "死叉 🔴"} color={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "#26a69a" : "#ef5350"} />
-                </Section>
-                <Section title="移動平均線 MA" color="#f0e68c">
-                  {[[5, "#f0e68c"], [10, "#87ceeb"], [20, "#ff8c69"], [60, "#da70d6"]].map(([p, col]) => <IndRow key={p} label={`MA${p}`} value={indData[`ma${p}`]?.toFixed(p <= 10 ? 4 : 2)} color={col} />)}
-                  <IndRow label="多空排列" value={(indData.ma5 || 0) > (indData.ma20 || 0) ? "多頭 ↑" : "空頭 ↓"} color={(indData.ma5 || 0) > (indData.ma20 || 0) ? "#26a69a" : "#ef5350"} />
-                </Section>
-              </>}
-
-              {/* 推薦 */}
-              {sideTab === "recs" && <>
-                <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div>
-                    <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🎯 高勝率推薦掃描</div>
-                    <div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動更新 · 掃描前 200 大幣</div>
-                  </div>
-                  {recsLoading && <span style={{ color: "#f0b90b", fontSize: 10, fontFamily: "monospace" }}>掃描中...</span>}
-                </div>
-                {recs && recs.long.length === 0 && recs.short.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>目前沒有達標的高勝率機會</div>}
-                {recs && recs.long.length > 0 && <Section title={`做多推薦 (${recs.long.length})`} color="#26a69a" defaultOpen={true}>
-                  {recs.long.map((r) => <div key={r.symbol} onClick={() => setSelected(coins.find((c) => c.symbol === r.symbol))} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 4px", borderBottom: "1px solid #111824", cursor: "pointer", fontFamily: "monospace" }}>
-                    <span style={{ color: "#e6edf3", fontSize: 11, fontWeight: 700, minWidth: 70 }}>{r.symbol}</span>
-                    <span style={{ color: "#787b86", fontSize: 10, flex: 1 }}>${fmtPr(r.price)}</span>
-                    <span style={{ background: "#26a69a", color: "#fff", fontSize: 9, padding: "2px 5px", borderRadius: 3, fontWeight: 700 }}>{r.score}分</span>
-                  </div>)}
-                </Section>}
-                {recs && recs.short.length > 0 && <Section title={`做空推薦 (${recs.short.length})`} color="#ef5350" defaultOpen={true}>
-                  {recs.short.map((r) => <div key={r.symbol} onClick={() => setSelected(coins.find((c) => c.symbol === r.symbol))} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 4px", borderBottom: "1px solid #111824", cursor: "pointer", fontFamily: "monospace" }}>
-                    <span style={{ color: "#e6edf3", fontSize: 11, fontWeight: 700, minWidth: 70 }}>{r.symbol}</span>
-                    <span style={{ color: "#787b86", fontSize: 10, flex: 1 }}>${fmtPr(r.price)}</span>
-                    <span style={{ background: "#ef5350", color: "#fff", fontSize: 9, padding: "2px 5px", borderRadius: 3, fontWeight: 700 }}>{r.score}分</span>
-                  </div>)}
-                </Section>}
-                <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.5, padding: "8px 4px" }}>
-                  <p>· 評分標準：多時區共振 + 動能 + 量能</p>
-                  <p>· 0-30 分弱 / 30-60 分中 / 60+ 分強</p>
-                  <p>· 點擊條目可切換至該商品分析</p>
-                </div>
-              </>}
-
-              {/* 警報 */}
-              {sideTab === "alerts" && <>
-                <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
-                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>⚡ 異常警報</div>
-                  <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘自動掃描 · OI 變化、量能爆量</div>
-                </div>
-                {alerts.length === 0 ? <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>目前無異常</div> :
-                  alerts.map((a) => {
-                    const color = a.severity === "high" ? "#ef5350" : a.severity === "warn" ? "#f0b90b" : "#58a6ff";
-                    return <div key={`${a.symbol}-${a.type}-${a.ts}`} onClick={() => setSelected(coins.find((c) => c.symbol === a.symbol))} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 4px", borderBottom: "1px solid #111824", cursor: "pointer", fontFamily: "monospace" }}>
-                      <span style={{ background: color, color: "#fff", fontSize: 9, padding: "2px 5px", borderRadius: 3, fontWeight: 700, minWidth: 36, textAlign: "center" }}>{a.type}</span>
-                      <span style={{ color: "#e6edf3", fontSize: 11, fontWeight: 700, minWidth: 65 }}>{a.symbol}</span>
-                      <span style={{ color: "#787b86", fontSize: 10, flex: 1 }}>{a.message}</span>
-                      <span style={{ color: "#4a5568", fontSize: 9 }}>{new Date(a.ts).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false })}</span>
-                    </div>;
-                  })}
-              </>}
-
-              {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
-                <FeedState state={j10flash}>
-                  {Array.isArray(j10flash) && j10flash.map((n, i) => (
-                    <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
-                      <div style={{ display: "flex", gap: 7 }}>
-                        <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
-                        <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
-                      </div>
-                    </div>
-                  ))}
-                </FeedState>
-              </Section>}
-
-              {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
-                <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📖 CRYPTEX 加密貨幣分析儀表板</p>
-                <p>專注於 Binance + OKX 加密貨幣合約市場分析，含 SMC 智能分析、多時區共振、推薦掃描、警報系統。</p>
-                <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🎯 SMC 智能分析</p>
-                <p>判斷市場結構（BOS/CHoCH）、訂單區塊、流動性區域，結合多時區共振給出多空訊號。</p>
-                <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 技術指標</p>
-                <p>RSI、MACD、KDJ、MA 等經典指標，配合即時 K 線資料判斷市場狀態。</p>
-                <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
-                <p>每 5 分鐘掃 200 大幣推薦清單；每 3 分鐘掃 OI 異常警報。</p>
-              </div>}
-            </div>
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+          {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span style={{ color: smc.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 4, padding: "1px 6px" }}>{smc.signal}</span>}
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950" }} />
+          <span style={{ color: "#354050", fontSize: 9, fontFamily: "monospace" }}>{status}</span>
         </div>
       </div>
-    </div>
-  );
-}
+
+      {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
+        <div style={{ padding: "6px 8px" }}>
+          <SearchInput key="search-box" value={search} onChange={setSearch} />
+        </div>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
+          {visibleList.map((coin) => {
+            const live = coins.find((c) => c.symbol === coin.symbol) || coin;
+            const active = selected?.symbol === coin.symbol;
+            return (
+              <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
+                <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
+                <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>}
+
+      <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden", minHeight: 0 }}>
+        {!isMobile && <div style={{ width: 200, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+          <div style={{ padding: "8px" }}>
+            <SearchInput key="search-box" value={search} onChange={setSearch} />
+          </div>
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
+            {visibleList.map((coin) => {
+              const live = coins.find((c) => c.symbol === coin.symbol) || coin;
+              const active = selected?.symbol === coin.symbol;
+              return (
+                <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
+                    <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.label ? (coin.label).slice(0, 6) : ""}{fmtVol(live.volume) ? (coin.label ? " · " : "") + fmtVol(live.volume) : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
+                    <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(live.price)}</span>
+                    <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+                  </div>
+                </button>
+              );
+            })}
+            {!search && filtered.length > visibleList.length && <button onClick={() => setListLimit((l) => l + 50)} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", color: "#58a6ff", padding: "8px", fontSize: 10, fontFamily: "monospace", cursor: "pointer" }}>載入更多 ({filtered.length - visibleList.length} 個)</button>}
+          </div>
+        </div>}
+
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          <div style={{ background: "#0d1520", borderBottom: "1px solid #1a2535", padding: "10px 14px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: "#e6edf3" }}>${fmtPr(displayPrice)}</span>
+                <span style={{ color: "#354050", fontSize: 10, fontFamily: "monospace" }}>{selected?.symbol} · 加密貨幣</span>
+              </div>
+              <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                <div style={{ color: up ? "#26a69a" : "#ef5350", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{up ? "▲" : "▼"} {Math.abs(change24h).toFixed(2)}%</div>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>24h 變化</div>
+              </div>
+            </div>
+          </div>
+
+          {periodChg && <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
+            {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([l
+
