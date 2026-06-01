@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti, aiAnalyze, aiAnalyzeCryptoDeep,
-  calcSMA, calcMACD, calcRSI, calcKDJ,
+  calcSMA, calcMACD, calcRSI, calcKDJ, calcATR,
   loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges,
   scanRecommendations, scanAnomalies, backtest, backtestMTF, analyzeMultiAI,
 } from "./data.js";
@@ -117,6 +117,12 @@ export default function App() {
   const [btLoading, setBtLoading] = useState(false);
   const [btMode, setBtMode] = useState("mtf"); // "mtf" 高勝率, "simple" 基本
   const [listLimit, setListLimit] = useState(50);
+  // 開單計畫（鎖定，不隨 K 線跳動）
+  const [orderPlan, setOrderPlan] = useState(null);
+  const [capital, setCapital] = useState(1000);
+  const [riskPct, setRiskPct] = useState(2);
+  const [leverage, setLeverage] = useState(10);
+  const [orderRefreshKey, setOrderRefreshKey] = useState(0);
 
   const lastSig = { current: null }; // 暫不用 useRef 簡化
 
@@ -298,6 +304,40 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sideTab, selected, smc, smcMulti]);
 
+  // 開單計畫（鎖定點位，避免跟著 K 線跳動）
+  // 重算時機：選擇商品變、tf 變、SMC 訊號真變化、手動刷新
+  useEffect(() => {
+    if (!selected || !candles.length || !smc) {
+      setOrderPlan(null);
+      return;
+    }
+    const closes = candles.map((c) => c.c);
+    const highs = candles.map((c) => c.h);
+    const lows = candles.map((c) => c.l);
+    const atrArr = calcATR(highs, lows, closes);
+    const atrNow = atrArr[atrArr.length - 1] || (closes[closes.length - 1] * 0.01);
+    const price = closes[closes.length - 1];
+    const isLong = smc.signal.includes("做多");
+    const isShort = smc.signal.includes("做空");
+    if (!isLong && !isShort) {
+      setOrderPlan(null);
+      return;
+    }
+    setOrderPlan({
+      isLong,
+      entry: price,
+      stop: isLong ? price - atrNow * 1.5 : price + atrNow * 1.5,
+      target1: isLong ? price + atrNow * 2 : price - atrNow * 2,
+      target2: isLong ? price + atrNow * 4 : price - atrNow * 4,
+      atr: atrNow,
+      signal: smc.signal,
+      confidence: smc.confidence,
+      tf,
+      ts: Date.now(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, tf, smc?.signal, orderRefreshKey]);
+
   // 回測（高勝率多時區 或 基本版）
   useEffect(() => {
     if (sideTab !== "backtest" || !selected) return;
@@ -451,7 +491,7 @@ export default function App() {
 
           {/* 分頁 */}
           <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto", background: "#080d14" }}>
-            {[["smc", "SMC"], ["ai", "AI 分析"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["backtest", "回測"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
+            {[["smc", "SMC"], ["ai", "AI 分析"], ["order", "開單"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["backtest", "回測"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
               <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>
             ))}
           </div>
@@ -539,6 +579,117 @@ export default function App() {
             </>}
 
             {/* 指標 */}
+            {/* 開單分頁 — 鎖定點位 + 倉位計算 */}
+            {sideTab === "order" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>📋 開單計畫</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>
+                    {orderPlan ? `${selected?.symbol} · ${orderPlan.tf} · 計算於 ${new Date(orderPlan.ts).toLocaleTimeString()}` : "等待 SMC 訊號..."}
+                  </div>
+                </div>
+                <button onClick={() => setOrderRefreshKey((k) => k + 1)} style={{ background: "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>↻ 重算</button>
+              </div>
+
+              {!orderPlan && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 12px", textAlign: "center", lineHeight: 1.8 }}>
+                目前 SMC 訊號為「觀望」，無明確進場方向。<br />
+                試試切換不同<b style={{ color: "#8b949e" }}>時間框架</b>（上方），或挑其他商品。
+              </div>}
+
+              {orderPlan && <>
+                {/* 主方向卡 */}
+                <div style={{ background: `${orderPlan.isLong ? "#26a69a" : "#ef5350"}14`, border: `1.5px solid ${orderPlan.isLong ? "#26a69a" : "#ef5350"}`, borderRadius: 12, padding: 14, marginBottom: 10, textAlign: "center" }}>
+                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>{orderPlan.signal} · 信心 {orderPlan.confidence}%</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: orderPlan.isLong ? "#26a69a" : "#ef5350", fontFamily: "monospace" }}>{orderPlan.isLong ? "📈 做多" : "📉 做空"}</div>
+                  <div style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", marginTop: 4 }}>R/R = 2.0 · 1.5 ATR 止損 · 3 ATR 目標</div>
+                </div>
+
+                {/* 點位區（鎖定，不會跳） */}
+                <Section title="進場與出場價" color="#58a6ff" defaultOpen={true} badge="🔒 鎖定">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", borderRadius: 6, border: "1px solid #1a2535" }}>
+                      <span style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace" }}>進場價</span>
+                      <span style={{ color: "#e6edf3", fontSize: 14, fontFamily: "monospace", fontWeight: 700 }}>{fmtPr(orderPlan.entry)}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", borderRadius: 6, border: "1px solid #ef535044", borderLeft: "3px solid #ef5350" }}>
+                      <span style={{ color: "#ef5350", fontSize: 10, fontFamily: "monospace" }}>止損</span>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ color: "#ef5350", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmtPr(orderPlan.stop)}</div>
+                        <div style={{ color: "#5a2020", fontSize: 9, fontFamily: "monospace" }}>-{(Math.abs(orderPlan.entry - orderPlan.stop) / orderPlan.entry * 100).toFixed(2)}% 風險</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", borderRadius: 6, border: "1px solid #26a69a44", borderLeft: "3px solid #26a69a" }}>
+                      <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace" }}>目標 1 (2R)</span>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ color: "#26a69a", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmtPr(orderPlan.target1)}</div>
+                        <div style={{ color: "#205040", fontSize: 9, fontFamily: "monospace" }}>+{(Math.abs(orderPlan.target1 - orderPlan.entry) / orderPlan.entry * 100).toFixed(2)}%</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", borderRadius: 6, border: "1px solid #26a69a44", borderLeft: "3px solid #26a69a" }}>
+                      <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace" }}>目標 2 (4R)</span>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ color: "#26a69a", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmtPr(orderPlan.target2)}</div>
+                        <div style={{ color: "#205040", fontSize: 9, fontFamily: "monospace" }}>+{(Math.abs(orderPlan.target2 - orderPlan.entry) / orderPlan.entry * 100).toFixed(2)}%</div>
+                      </div>
+                    </div>
+                  </div>
+                </Section>
+
+                {/* 倉位大小計算器 */}
+                <Section title="倉位大小計算器" color="#a78bfa" defaultOpen={true}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                    <div>
+                      <label style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", display: "block", marginBottom: 3 }}>本金 (USDT)</label>
+                      <input type="number" value={capital} onChange={(e) => setCapital(parseFloat(e.target.value) || 0)}
+                        style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 4, color: "#e6edf3", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }} />
+                    </div>
+                    <div>
+                      <label style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", display: "block", marginBottom: 3 }}>每筆風險 (% 本金)</label>
+                      <input type="number" value={riskPct} onChange={(e) => setRiskPct(parseFloat(e.target.value) || 0)} step="0.5"
+                        style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 4, color: "#e6edf3", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }} />
+                    </div>
+                    <div>
+                      <label style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", display: "block", marginBottom: 3 }}>槓桿倍數</label>
+                      <input type="number" value={leverage} onChange={(e) => setLeverage(parseFloat(e.target.value) || 1)} step="1"
+                        style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 4, color: "#e6edf3", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }} />
+                    </div>
+                  </div>
+                  <div style={{ padding: 10, background: "#0a0f14", borderRadius: 6, border: "1px solid #1a2535" }}>
+                    {(() => {
+                      const lossAmount = capital * (riskPct / 100);
+                      const stopDistPct = Math.abs(orderPlan.entry - orderPlan.stop) / orderPlan.entry * 100;
+                      const positionUSDT = stopDistPct > 0 ? lossAmount / (stopDistPct / 100) : 0;
+                      const positionCoin = orderPlan.entry > 0 ? positionUSDT / orderPlan.entry : 0;
+                      const margin = leverage > 0 ? positionUSDT / leverage : 0;
+                      const profit1 = (Math.abs(orderPlan.target1 - orderPlan.entry) / orderPlan.entry) * positionUSDT;
+                      const profit2 = (Math.abs(orderPlan.target2 - orderPlan.entry) / orderPlan.entry) * positionUSDT;
+                      return <>
+                        <IndRow label="可虧金額" value={`${lossAmount.toFixed(2)} USDT`} color="#ef5350" />
+                        <IndRow label="止損距離" value={`${stopDistPct.toFixed(2)}%`} />
+                        <IndRow label="建議倉位（名目）" value={`${positionUSDT.toFixed(2)} USDT`} color="#58a6ff" />
+                        <IndRow label={`${selected?.name || "幣"} 數量`} value={positionCoin.toFixed(positionCoin > 100 ? 2 : positionCoin > 1 ? 4 : 6)} />
+                        <IndRow label={`保證金（${leverage}x 槓桿）`} value={`${margin.toFixed(2)} USDT`} color="#f0e68c" />
+                        <div style={{ height: 1, background: "#1a2535", margin: "6px 0" }} />
+                        <IndRow label="到目標 1 獲利" value={`+${profit1.toFixed(2)} USDT`} color="#26a69a" />
+                        <IndRow label="到目標 2 獲利" value={`+${profit2.toFixed(2)} USDT`} color="#26a69a" />
+                      </>;
+                    })()}
+                  </div>
+                </Section>
+
+                <div style={{ background: "#130a0a", border: "1px solid #2a1010", borderRadius: 8, padding: 10, marginTop: 8 }}>
+                  <div style={{ color: "#5a2020", fontSize: 9, lineHeight: 1.7 }}>
+                    ⚠️ <b>價位已鎖定</b>，不會隨即時價跳動。只在以下情況才重算：<br />
+                    · 切換商品<br />
+                    · 切換時間框架<br />
+                    · SMC 訊號方向變化（從觀望→做多/做空，或反轉）<br />
+                    · 點「↻ 重算」按鈕<br /><br />
+                    實際開單請以交易所頁面為準。本資訊僅供參考。
+                  </div>
+                </div>
+              </>}
+            </>}
+
             {sideTab === "indicators" && indData && <>
               <Section title="RSI (14)" color="#a78bfa">
                 <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
