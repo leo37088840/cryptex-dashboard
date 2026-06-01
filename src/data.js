@@ -768,6 +768,309 @@ export async function scanAnomalies(coins, top = 200) {
   return alerts.sort((a, b) => b.severity - a.severity);
 }
 
+// ═══════════ 多 AI 個別分析（5 個派系）═══════════════════════════════════════
+function formatAIResult(name, emoji, score, maxScore, reasons) {
+  let direction = "觀望", color = "#787b86";
+  if (score >= maxScore * 0.7) { direction = "強烈做多"; color = "#26a69a"; }
+  else if (score >= maxScore * 0.3) { direction = "做多"; color = "#26a69a"; }
+  else if (score <= -maxScore * 0.7) { direction = "強烈做空"; color = "#ef5350"; }
+  else if (score <= -maxScore * 0.3) { direction = "做空"; color = "#ef5350"; }
+  const confidence = Math.min(99, Math.round((Math.abs(score) / maxScore) * 100));
+  return { name, emoji, direction, color, confidence, score, reasons };
+}
+
+// AI 1: 趨勢跟隨派 — 均線、ADX、動能
+function aiTrendFollower(candles) {
+  const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l);
+  const n = closes.length - 1;
+  let score = 0;
+  const reasons = [];
+  const ma5 = calcSMA(closes, 5)[n], ma20 = calcSMA(closes, 20)[n], ma60 = calcSMA(closes, 60)[n];
+  if (ma5 && ma20 && ma60) {
+    if (ma5 > ma20 && ma20 > ma60) { score += 3; reasons.push("均線多頭排列 (5>20>60)"); }
+    else if (ma5 < ma20 && ma20 < ma60) { score -= 3; reasons.push("均線空頭排列 (5<20<60)"); }
+    else reasons.push("均線糾結");
+  }
+  const adx = calcADX(highs, lows, closes)[n];
+  if (adx != null) {
+    if (adx > 25) reasons.push(`趨勢強勁 (ADX ${adx.toFixed(0)})`);
+    else if (adx > 15) reasons.push(`趨勢中等 (ADX ${adx.toFixed(0)})`);
+    else { reasons.push(`盤整 (ADX ${adx.toFixed(0)}, 訊號減半)`); score *= 0.5; }
+  }
+  if (n >= 10) {
+    const recent = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const base = closes.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+    const mom = ((recent - base) / base) * 100;
+    if (mom > 1) { score += 1; reasons.push(`短期動能 +${mom.toFixed(1)}%`); }
+    else if (mom < -1) { score -= 1; reasons.push(`短期動能 ${mom.toFixed(1)}%`); }
+  }
+  return formatAIResult("趨勢跟隨", "🏃", score, 5, reasons);
+}
+
+// AI 2: 均值回歸派 — RSI / KDJ / 布林帶反向
+function aiMeanReversion(candles) {
+  const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l);
+  const n = closes.length - 1;
+  let score = 0;
+  const reasons = [];
+  const rsi = calcRSI(closes)[n];
+  if (rsi != null) {
+    if (rsi > 75) { score -= 2; reasons.push(`RSI ${rsi.toFixed(0)} 超買，預期回落`); }
+    else if (rsi < 25) { score += 2; reasons.push(`RSI ${rsi.toFixed(0)} 超賣，預期反彈`); }
+    else reasons.push(`RSI ${rsi.toFixed(0)} 中性`);
+  }
+  const kdj = calcKDJ(highs, lows, closes)[n];
+  if (kdj?.k != null) {
+    if (kdj.k > 80) { score -= 1; reasons.push(`KDJ K=${kdj.k.toFixed(0)} 過熱`); }
+    else if (kdj.k < 20) { score += 1; reasons.push(`KDJ K=${kdj.k.toFixed(0)} 過冷`); }
+  }
+  if (n >= 20) {
+    const window = closes.slice(n - 19, n + 1);
+    const mean = window.reduce((s, x) => s + x, 0) / 20;
+    const std = Math.sqrt(window.reduce((s, x) => s + (x - mean) ** 2, 0) / 20);
+    const upper = mean + std * 2, lower = mean - std * 2;
+    const price = closes[n];
+    if (price > upper) { score -= 2; reasons.push("價突破布林上軌，預期回落"); }
+    else if (price < lower) { score += 2; reasons.push("價跌破布林下軌，預期反彈"); }
+    else reasons.push("價在布林帶內");
+  }
+  return formatAIResult("均值回歸", "🔁", score, 5, reasons);
+}
+
+// AI 3: SMC 機構派 — 用現有 SMC 引擎
+function aiSMCFlavor(smc, smcMulti) {
+  let score = 0;
+  const reasons = [];
+  if (!smc) return formatAIResult("SMC 機構", "🏛️", 0, 1, ["SMC 資料不足"]);
+  if (smc.signal.includes("強力做多")) { score += 4; reasons.push(`主訊號：${smc.signal}`); }
+  else if (smc.signal.includes("做多")) { score += 2; reasons.push(`主訊號：${smc.signal}`); }
+  else if (smc.signal.includes("強力做空")) { score -= 4; reasons.push(`主訊號：${smc.signal}`); }
+  else if (smc.signal.includes("做空")) { score -= 2; reasons.push(`主訊號：${smc.signal}`); }
+  else reasons.push("主訊號：觀望");
+  const valid = (smcMulti || []).filter((m) => m.result);
+  const longs = valid.filter((m) => m.result.signal.includes("做多")).length;
+  const shorts = valid.filter((m) => m.result.signal.includes("做空")).length;
+  if (longs >= 3) { score += 2; reasons.push(`多時區共振 ${longs}/${valid.length} 多頭`); }
+  else if (shorts >= 3) { score -= 2; reasons.push(`多時區共振 ${shorts}/${valid.length} 空頭`); }
+  if (smc.structure.includes("上升")) reasons.push("市場結構：上升");
+  else if (smc.structure.includes("下降")) reasons.push("市場結構：下降");
+  if (smc.fvg) reasons.push(`${smc.fvg.type === "bull" ? "多頭" : "空頭"} FVG 失衡`);
+  if (smc.ob) reasons.push(`${smc.ob.type === "bull" ? "多頭" : "空頭"} 訂單塊`);
+  if (smc.sweep) reasons.push(smc.sweep);
+  return formatAIResult("SMC 機構", "🏛️", score, 8, reasons);
+}
+
+// AI 4: 期貨情緒派 — Funding / OI / 多空比 / Taker CVD
+async function aiFuturesSentiment(item, candles) {
+  let score = 0;
+  const reasons = [];
+  const [funding, oiHist, globalLS, topLS, taker] = await Promise.all([
+    loadFundingRate(item).catch(() => null),
+    loadOIHist(item, "5m", 12).catch(() => null),
+    loadGlobalLongShort(item).catch(() => null),
+    loadTopLongShortPosition(item).catch(() => null),
+    loadTakerVolume(item).catch(() => null),
+  ]);
+  if (funding) {
+    const fr = funding.funding * 100;
+    if (fr > 0.05) { score -= 1; reasons.push(`資金費率 +${fr.toFixed(4)}% 多頭擁擠`); }
+    else if (fr < -0.02) { score += 1; reasons.push(`資金費率 ${fr.toFixed(4)}% 空頭擁擠`); }
+    else reasons.push(`資金費率 ${fr.toFixed(4)}% 中性`);
+  }
+  if (oiHist && oiHist.length >= 6) {
+    const oiNow = oiHist[oiHist.length - 1].oi, oiOld = oiHist[0].oi;
+    if (oiOld > 0) {
+      const oiChg = ((oiNow - oiOld) / oiOld) * 100;
+      const cls = candles.map((c) => c.c);
+      const baseP = cls[Math.max(0, cls.length - 13)];
+      const pChg = baseP > 0 ? ((cls[cls.length - 1] - baseP) / baseP) * 100 : 0;
+      if (oiChg > 3 && pChg > 0) { score += 2; reasons.push(`OI +${oiChg.toFixed(1)}% 價漲 健康多頭`); }
+      else if (oiChg > 3 && pChg < 0) { score -= 1; reasons.push(`OI +${oiChg.toFixed(1)}% 價跌 空單建倉`); }
+      else if (oiChg < -3 && pChg > 0) { score += 1; reasons.push(`OI ${oiChg.toFixed(1)}% 價漲 空單回補`); }
+      else if (oiChg < -3 && pChg < 0) reasons.push(`OI ${oiChg.toFixed(1)}% 價跌 多頭離場`);
+    }
+  }
+  if (globalLS && topLS) {
+    if (globalLS.ratio < 0.85 && topLS.ratio > 1.15) { score += 2; reasons.push(`散戶看空 大戶看多 反指標利多`); }
+    else if (globalLS.ratio > 1.4 && topLS.ratio < 0.9) { score -= 2; reasons.push(`散戶看多 大戶看空 反指標利空`); }
+    else if (topLS.ratio > 1.2) { score += 1; reasons.push(`大戶看多 (${topLS.ratio.toFixed(2)})`); }
+    else if (topLS.ratio < 0.85) { score -= 1; reasons.push(`大戶看空 (${topLS.ratio.toFixed(2)})`); }
+  }
+  if (taker) {
+    if (taker.cvdRecent > 0 && taker.ratio > 1.1) { score += 1; reasons.push("主動買盤資金流入"); }
+    else if (taker.cvdRecent < 0 && taker.ratio < 0.9) { score -= 1; reasons.push("主動賣盤資金流出"); }
+  }
+  if (reasons.length === 0) reasons.push("無法取得期貨資料");
+  return formatAIResult("期貨情緒", "💰", score, 7, reasons);
+}
+
+// AI 5: 整合派 — 看其他四個的共識
+function aiConsensus(otherAIs) {
+  let total = 0;
+  const reasons = [];
+  otherAIs.forEach((ai) => {
+    if (!ai) return;
+    if (ai.direction !== "觀望") {
+      const v = ai.direction.includes("做多") ? 1 : ai.direction.includes("做空") ? -1 : 0;
+      total += v * (ai.confidence / 100);
+      reasons.push(`${ai.emoji} ${ai.name}：${ai.direction} ${ai.confidence}%`);
+    } else {
+      reasons.push(`${ai.emoji} ${ai.name}：觀望`);
+    }
+  });
+  return formatAIResult("整合共識", "🧠", total * 2.5, 4, reasons);
+}
+
+// 主入口：執行所有 AI，回傳 5 個結果
+export async function analyzeMultiAI(item, candles, smc, smcMulti) {
+  if (!candles || candles.length < 30) return null;
+  const trend = aiTrendFollower(candles);
+  const reversion = aiMeanReversion(candles);
+  const smcA = aiSMCFlavor(smc, smcMulti);
+  const futures = await aiFuturesSentiment(item, candles);
+  const consensus = aiConsensus([trend, reversion, smcA, futures]);
+  return [trend, reversion, smcA, futures, consensus];
+}
+
+// ═══════════ 高勝率回測（多時區策略）═══════════════════════════════════════
+// 1D 趨勢確認 + 4H ADX>20 + 4H 方向一致 + 1H SMC 進場 + 量能確認
+export async function backtestMTF(item, opts = {}) {
+  const { atrMult = 1.5, targetMult = 3, maxBars = 30, minConfidence = 50 } = opts;
+
+  const [c1H, c4H, c1D] = await Promise.all([
+    loadKlines(item, "1H").catch(() => null),
+    loadKlines(item, "4H").catch(() => null),
+    loadKlines(item, "1D").catch(() => null),
+  ]);
+
+  if (!c1H || !c4H || !c1D || c1H.length < 80 || c4H.length < 50 || c1D.length < 50) {
+    return null;
+  }
+
+  const findIdx = (arr, t) => {
+    let lo = 0, hi = arr.length - 1, ans = -1;
+    while (lo <= hi) {
+      const m = (lo + hi) >> 1;
+      if (arr[m].t <= t) { ans = m; lo = m + 1; }
+      else hi = m - 1;
+    }
+    return ans;
+  };
+
+  const c4HHighs = c4H.map((c) => c.h), c4HLows = c4H.map((c) => c.l), c4HCloses = c4H.map((c) => c.c);
+  const atr4H = calcATR(c4HHighs, c4HLows, c4HCloses);
+  const adx4H = calcADX(c4HHighs, c4HLows, c4HCloses);
+
+  const trades = [];
+  let open = null;
+  const startIdx = 60;
+
+  for (let i = startIdx; i < c1H.length; i++) {
+    const cdl = c1H[i];
+
+    if (open) {
+      let exited = false;
+      if (open.isLong) {
+        if (cdl.l <= open.stop) { open.exit = open.stop; open.exitReason = "止損"; open.pnl = ((open.stop - open.entry) / open.entry) * 100; exited = true; }
+        else if (cdl.h >= open.target) { open.exit = open.target; open.exitReason = "目標達成"; open.pnl = ((open.target - open.entry) / open.entry) * 100; exited = true; }
+      } else {
+        if (cdl.h >= open.stop) { open.exit = open.stop; open.exitReason = "止損"; open.pnl = ((open.entry - open.stop) / open.entry) * 100; exited = true; }
+        else if (cdl.l <= open.target) { open.exit = open.target; open.exitReason = "目標達成"; open.pnl = ((open.entry - open.target) / open.entry) * 100; exited = true; }
+      }
+      if (!exited) {
+        const i1D = findIdx(c1D, cdl.t);
+        if (i1D >= 40) {
+          const smc1D = analyzeSMC(c1D.slice(0, i1D + 1));
+          if (smc1D) {
+            if (open.isLong && smc1D.structure.includes("下降")) {
+              open.exit = cdl.c; open.exitReason = "1D 翻轉"; open.pnl = ((cdl.c - open.entry) / open.entry) * 100; exited = true;
+            } else if (!open.isLong && smc1D.structure.includes("上升")) {
+              open.exit = cdl.c; open.exitReason = "1D 翻轉"; open.pnl = ((open.entry - cdl.c) / open.entry) * 100; exited = true;
+            }
+          }
+        }
+      }
+      if (!exited && i - open.entryIdx >= maxBars) {
+        open.exit = cdl.c; open.exitReason = "時間止損";
+        open.pnl = open.isLong ? ((cdl.c - open.entry) / open.entry) * 100 : ((open.entry - cdl.c) / open.entry) * 100;
+        exited = true;
+      }
+      if (exited) {
+        open.exitTime = cdl.t;
+        open.barsHeld = i - open.entryIdx;
+        trades.push(open);
+        open = null;
+      }
+    }
+
+    if (!open) {
+      const i1D = findIdx(c1D, cdl.t);
+      const i4H = findIdx(c4H, cdl.t);
+      if (i1D < 40 || i4H < 40) continue;
+
+      const smc1D = analyzeSMC(c1D.slice(0, i1D + 1));
+      if (!smc1D) continue;
+      const is1DUp = smc1D.structure.includes("上升");
+      const is1DDown = smc1D.structure.includes("下降");
+      if (!is1DUp && !is1DDown) continue;
+
+      const adx = adx4H[i4H];
+      if (adx == null || adx < 20) continue;
+
+      const smc4H = analyzeSMC(c4H.slice(0, i4H + 1));
+      if (!smc4H) continue;
+      const is4HUp = smc4H.structure.includes("上升") || smc4H.signal.includes("做多");
+      const is4HDown = smc4H.structure.includes("下降") || smc4H.signal.includes("做空");
+      if (is1DUp && !is4HUp) continue;
+      if (is1DDown && !is4HDown) continue;
+
+      const smc1H = analyzeSMC(c1H.slice(0, i + 1));
+      if (!smc1H || smc1H.confidence < minConfidence) continue;
+      const is1HLong = smc1H.signal.includes("做多");
+      const is1HShort = smc1H.signal.includes("做空");
+      if (is1DUp && !is1HLong) continue;
+      if (is1DDown && !is1HShort) continue;
+
+      const vol5 = c1H.slice(Math.max(0, i - 4), i + 1).reduce((s, x) => s + x.v, 0) / 5;
+      const vol20 = c1H.slice(Math.max(0, i - 19), i + 1).reduce((s, x) => s + x.v, 0) / 20;
+      if (vol20 > 0 && vol5 < vol20 * 0.7) continue;
+
+      const isLong = is1DUp;
+      const atr = atr4H[i4H] || (cdl.c * 0.01);
+      open = {
+        entryIdx: i, entryTime: cdl.t, entry: cdl.c,
+        isLong, signal: smc1H.signal, confidence: smc1H.confidence,
+        structure: smc1D.structure,
+        stop: isLong ? cdl.c - atr * atrMult : cdl.c + atr * atrMult,
+        target: isLong ? cdl.c + atr * targetMult : cdl.c - atr * targetMult,
+      };
+    }
+  }
+
+  const wins = trades.filter((t) => t.pnl > 0);
+  const losses = trades.filter((t) => t.pnl <= 0);
+  const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
+  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : (totalWin > 0 ? 99 : 0);
+
+  let cum = 0;
+  const equity = trades.map((t) => { cum += t.pnl; return { t: t.exitTime, cum }; });
+  let peak = 0, maxDD = 0;
+  equity.forEach((e) => {
+    if (e.cum > peak) peak = e.cum;
+    if (e.cum - peak < maxDD) maxDD = e.cum - peak;
+  });
+
+  return {
+    trades, equity,
+    stats: { total: trades.length, wins: wins.length, losses: losses.length, winRate, totalPnl, avgWin, avgLoss, profitFactor, maxDD },
+  };
+}
+
 // ═══════════ JIN10 FLASH ═══════════════════════════════════════════════════
 function extractJsonArray(txt) {
   if (!txt) return null;
