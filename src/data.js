@@ -34,7 +34,7 @@ async function getText(url, { useProxy = false } = {}) {
   } catch { return null; }
 }
 
-// ═══════════ 現貨列表 (Binance + OKX + CoinGecko) ═══════════════════════════
+// ═══════════ 永續合約列表 (Binance Futures + OKX SWAP + CoinGecko 補中文名) ═══
 export async function loadCrypto() {
   const merged = new Map();
   const add = (c) => {
@@ -43,32 +43,45 @@ export async function loadCrypto() {
     if (!ex || (c.volume || 0) > (ex.volume || 0)) merged.set(c.name, c);
   };
   const [binance, okx, gecko] = await Promise.all([
-    jget("https://api.binance.com/api/v3/ticker/24hr"),
-    jget("https://www.okx.com/api/v5/market/tickers?instType=SPOT"),
+    jget("https://fapi.binance.com/fapi/v1/ticker/24hr"),
+    jget("https://www.okx.com/api/v5/market/tickers?instType=SWAP"),
     jget("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=500&page=1"),
   ]);
+  // 先用 CoinGecko 建立中文名對照表
+  const labelMap = new Map();
+  if (Array.isArray(gecko)) {
+    gecko.forEach((c) => labelMap.set(c.symbol.toUpperCase(), c.name));
+  }
   if (Array.isArray(binance)) {
-    binance.filter((t) => t.symbol.endsWith("USDT") && !t.symbol.includes("UP") && !t.symbol.includes("DOWN") && !/\d(?:L|S)USDT$/.test(t.symbol))
-      .forEach((t) => add({
-        symbol: t.symbol.replace("USDT", "-USDT"), binanceSymbol: t.symbol, name: t.symbol.replace("USDT", ""),
-        cat: "crypto", price: parseFloat(t.lastPrice) || 0,
-        change: parseFloat(t.priceChangePercent) || 0, volume: parseFloat(t.quoteVolume) || 0,
-      }));
+    binance.filter((t) => t.symbol.endsWith("USDT") && !t.symbol.includes("_"))
+      .forEach((t) => {
+        const name = t.symbol.replace("USDT", "");
+        add({
+          symbol: t.symbol.replace("USDT", "-USDT"),
+          binanceSymbol: t.symbol,
+          name,
+          label: labelMap.get(name),
+          cat: "crypto",
+          price: parseFloat(t.lastPrice) || 0,
+          change: parseFloat(t.priceChangePercent) || 0,
+          volume: parseFloat(t.quoteVolume) || 0,
+        });
+      });
   }
   if (okx?.data?.length) {
-    okx.data.filter((t) => t.instId.endsWith("-USDT")).forEach((t) => add({
-      symbol: t.instId, okxSymbol: t.instId, name: t.instId.replace("-USDT", ""),
-      cat: "crypto", price: parseFloat(t.last) || 0,
-      change: t.open24h ? ((parseFloat(t.last) - parseFloat(t.open24h)) / parseFloat(t.open24h)) * 100 : 0,
-      volume: parseFloat(t.volCcy24h) || 0,
-    }));
-  }
-  if (Array.isArray(gecko)) {
-    gecko.forEach((c) => add({
-      symbol: `${c.symbol.toUpperCase()}-USDT`, name: c.symbol.toUpperCase(), label: c.name,
-      cat: "crypto", price: c.current_price || 0, change: c.price_change_percentage_24h || 0,
-      volume: c.total_volume || 0,
-    }));
+    okx.data.filter((t) => t.instId.endsWith("-USDT-SWAP")).forEach((t) => {
+      const name = t.instId.replace("-USDT-SWAP", "");
+      add({
+        symbol: `${name}-USDT`,
+        okxSymbol: t.instId,
+        name,
+        label: labelMap.get(name),
+        cat: "crypto",
+        price: parseFloat(t.last) || 0,
+        change: t.open24h ? ((parseFloat(t.last) - parseFloat(t.open24h)) / parseFloat(t.open24h)) * 100 : 0,
+        volume: parseFloat(t.volCcy24h) || 0,
+      });
+    });
   }
   return Array.from(merged.values()).sort((a, b) => (b.volume || 0) - (a.volume || 0));
 }
@@ -83,7 +96,8 @@ const BINANCE_TF = { "15m":"15m", "1H":"1h", "4H":"4h", "1D":"1d" };
 async function klinesBinance(item, tf) {
   const sym = item.binanceSymbol || `${item.name}USDT`;
   const interval = BINANCE_TF[tf] || "15m";
-  const b = await jget(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${interval}&limit=500`);
+  // 永續合約 K 線
+  const b = await jget(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=500`);
   if (!Array.isArray(b) || !b.length) return null;
   return b.map((k) => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
 }
@@ -108,7 +122,7 @@ export async function loadPeriodChanges(item) {
   return { today: chg(1), d7: chg(7), d30: chg(30), d90: chg(90), d180: chg(180), y1: chg(365) };
 }
 
-// ═══════════ WebSocket ═════════════════════════════════════════════════════
+// ═══════════ WebSocket (Binance Futures) ═══════════════════════════════════
 export function subscribeCryptoTicker(binanceSymbol, onTick) {
   if (!binanceSymbol) return () => {};
   const sym = binanceSymbol.toLowerCase();
@@ -116,7 +130,8 @@ export function subscribeCryptoTicker(binanceSymbol, onTick) {
   const connect = () => {
     if (closed) return;
     try {
-      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@trade`);
+      // 永續合約 trade stream
+      ws = new WebSocket(`wss://fstream.binance.com/ws/${sym}@trade`);
       ws.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
@@ -145,7 +160,7 @@ export function subscribeCryptoKline(binanceSymbol, tf, onCandle) {
   const connect = () => {
     if (closed) return;
     try {
-      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@kline_${intv}`);
+      ws = new WebSocket(`wss://fstream.binance.com/ws/${sym}@kline_${intv}`);
       ws.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
