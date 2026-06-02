@@ -3,7 +3,7 @@ import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
   calcSMA, calcMACD, calcRSI, calcKDJ,
   loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges,
-  scanRecommendations, scanAnomalies,
+  scanRecommendations, scanAnomalies, analyzeMultiAI,
 } from "./data.js";
 
 const INTERVALS = ["15m", "1H", "4H", "1D"];
@@ -63,6 +63,7 @@ const SearchInput = ({ value, onChange }) => (
   />
 );
 
+// AI 卡片
 function AICard({ ai, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
   if (!ai) return null;
@@ -87,6 +88,7 @@ function AICard({ ai, defaultOpen = false }) {
     </div>
   );
 }
+
 export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
@@ -107,8 +109,10 @@ export default function App() {
   const [recsTs, setRecsTs] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [listLimit, setListLimit] = useState(50);
+  const [multiAI, setMultiAI] = useState(null);
+  const [multiAILoading, setMultiAILoading] = useState(false);
 
-  const lastSig = { current: null };
+  const lastSig = { current: null }; // 暫不用 useRef 簡化
 
   const filtered = useMemo(() => {
     if (!search) return coins;
@@ -117,6 +121,7 @@ export default function App() {
   }, [search, coins]);
   const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
+  // 載入加密貨幣列表
   useEffect(() => {
     let cancel = false;
     async function run() {
@@ -132,6 +137,7 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, [search]);
 
+  // 金十快訊
   useEffect(() => {
     let cancel = false;
     async function run() { const r = await loadJin10Flash(); if (!cancel) setJ10flash(r); }
@@ -139,6 +145,7 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, []);
 
+  // 載入 K 線（後台用，給指標/SMC/AI 計算，UI 不畫圖）
   useEffect(() => {
     if (!selected) return;
     let cancel = false;
@@ -153,6 +160,7 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, [selected, tf]);
 
+  // SMC（只在新 K 棒時重算）
   const lastCandleT = candles.length > 0 ? candles[candles.length - 1].t : 0;
   useEffect(() => {
     if (candles.length < 40 || !selected) { setSmc(null); return; }
@@ -173,12 +181,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastCandleT, selected, notifOn]);
 
+  // SMC 多時區
   useEffect(() => {
     if (!selected) return; let cancel = false;
     analyzeSMCMulti(selected).then((r) => { if (!cancel) setSmcMulti(r); });
     return () => { cancel = true; };
   }, [selected]);
 
+  // 多週期漲跌
   useEffect(() => {
     if (!selected) { setPeriodChg(null); return; }
     let cancel = false;
@@ -187,6 +197,7 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
+  // Trade WebSocket（即時價）
   useEffect(() => {
     if (!selected || selected.cat !== "crypto") return;
     let lastTs = 0;
@@ -209,6 +220,7 @@ export default function App() {
     return () => off();
   }, [selected]);
 
+  // 推薦掃描
   const coinsLoaded = coins.length > 0;
   useEffect(() => {
     if (sideTab !== "recs" || !coinsLoaded) return;
@@ -223,6 +235,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sideTab, coinsLoaded, recsTs]);
 
+  // 警報掃描
   useEffect(() => {
     if (!coinsLoaded) return;
     let cancel = false;
@@ -248,6 +261,18 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coinsLoaded]);
 
+  // 多 AI 個別分析（5 個派系）
+  useEffect(() => {
+    if (sideTab !== "ai" || !selected || !candles.length || !smc) return;
+    let cancel = false;
+    setMultiAILoading(true);
+    analyzeMultiAI(selected, candles, smc, smcMulti).then((r) => {
+      if (!cancel) { setMultiAI(r); setMultiAILoading(false); }
+    }).catch(() => { if (!cancel) setMultiAILoading(false); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sideTab, selected, smc, smcMulti]);
+
   async function enableNotif() {
     if (typeof Notification === "undefined") { setNotifOn(true); return; }
     try { const p = await Notification.requestPermission(); setNotifOn(true); if (p === "granted") new Notification("✅ 通知已開啟", { body: "SMC 多空訊號將即時通知你" }); } catch { setNotifOn(true); }
@@ -271,6 +296,7 @@ export default function App() {
     if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
     return String(Math.round(v));
   };
+
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#070b10", color: "#c9d1d9", fontFamily: "system-ui,sans-serif", overflow: "hidden" }}>
       <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:#1a2535;border-radius:2px}button{cursor:pointer;outline:none}@keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}`}</style>
@@ -298,6 +324,7 @@ export default function App() {
         </div>
       </div>
 
+      {/* 手機版：商品列表 chips（橫向） */}
       {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
         <div style={{ padding: "6px 8px" }}>
           <SearchInput key="search-box" value={search} onChange={setSearch} />
@@ -317,6 +344,7 @@ export default function App() {
       </div>}
 
       <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden", minHeight: 0 }}>
+        {/* 桌面版：左側商品列表 */}
         {!isMobile && <div style={{ width: 200, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ padding: "8px" }}>
             <SearchInput key="search-box" value={search} onChange={setSearch} />
@@ -343,7 +371,9 @@ export default function App() {
           </div>
         </div>}
 
+        {/* 主分析區（無 K 線） */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          {/* 價格 header */}
           <div style={{ background: "#0d1520", borderBottom: "1px solid #1a2535", padding: "10px 14px", flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div style={{ display: "flex", flexDirection: "column" }}>
@@ -357,6 +387,7 @@ export default function App() {
             </div>
           </div>
 
+          {/* 多週期 bar */}
           {periodChg && <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
             {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([lbl, val]) => (
               <div key={lbl} style={{ flex: 1, minWidth: 52, textAlign: "center", padding: "0 4px" }}>
@@ -366,6 +397,7 @@ export default function App() {
             ))}
           </div>}
 
+          {/* 時間框架（給分析用） */}
           <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "6px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>分析時間框架:</span>
             {INTERVALS.map((iv) => (
@@ -373,13 +405,15 @@ export default function App() {
             ))}
           </div>
 
+          {/* 分頁 */}
           <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto", background: "#080d14" }}>
-            {[["smc", "SMC"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
+            {[["smc", "SMC"], ["ai", "AI 分析"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
               <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>
             ))}
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+            {/* SMC */}
             {sideTab === "smc" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
@@ -419,6 +453,37 @@ export default function App() {
               </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
             </>}
 
+
+
+            {sideTab === "ai" && <>
+              {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
+              {multiAI && multiAI.length > 0 && (() => {
+                const consensus = multiAI[multiAI.length - 1];
+                return (
+                  <div style={{ background: `${consensus.color}14`, border: `1.5px solid ${consensus.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
+                    <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識 · {selected?.symbol}</div>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: consensus.color, fontFamily: "monospace" }}>{consensus.direction}</div>
+                    <div style={{ color: consensus.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>共識信心 {consensus.confidence}%</div>
+                  </div>
+                );
+              })()}
+              {multiAI && multiAI.length > 0 && <Section title="🤖 5 個 AI 派系觀點" color="#a78bfa" defaultOpen={true}>
+                <div style={{ color: "#4a5568", fontSize: 9, padding: "0 0 8px", lineHeight: 1.5 }}>點任一派系展開查看完整理由</div>
+                {multiAI.slice(0, -1).map((ai, i) => <AICard key={i} ai={ai} defaultOpen={false} />)}
+              </Section>}
+              {multiAI && multiAI.length > 0 && <Section title="🧠 整合共識詳情" color={multiAI[multiAI.length - 1].color} defaultOpen={true}>
+                <AICard ai={multiAI[multiAI.length - 1]} defaultOpen={true} />
+              </Section>}
+              <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.5, padding: "8px 4px" }}>
+                <p style={{ color: "#787b86", marginBottom: 4 }}>5 個 AI 派系：</p>
+                <p>· 🏃 <span style={{ color: "#26a69a" }}>趨勢跟隨</span>：MA 排列 + 多時區趨勢</p>
+                <p>· 🔁 <span style={{ color: "#f0b90b" }}>均值回歸</span>：RSI 極值 + KDJ 反轉</p>
+                <p>· 🏛️ <span style={{ color: "#58a6ff" }}>SMC 機構</span>：結構轉折 + FVG/OB/掃單</p>
+                <p>· 💰 <span style={{ color: "#a78bfa" }}>期貨情緒</span>：資金費率 + OI + 多空比</p>
+                <p>· 🧠 <span style={{ color: "#e040fb" }}>整合共識</span>：加權合併四派系結論</p>
+              </div>
+            </>}
+
             {sideTab === "indicators" && indData && <>
               <Section title="RSI (14)" color="#a78bfa">
                 <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
@@ -443,6 +508,7 @@ export default function App() {
               </Section>
             </>}
 
+            {/* 推薦 */}
             {sideTab === "recs" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -485,6 +551,7 @@ export default function App() {
               </>}
             </>}
 
+            {/* 警報 */}
             {sideTab === "alerts" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
@@ -515,6 +582,7 @@ export default function App() {
               </div>
             </>}
 
+            {/* 金十 */}
             {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
               <FeedState state={j10flash}>
                 {Array.isArray(j10flash) && j10flash.map((n, i) => (
@@ -528,12 +596,15 @@ export default function App() {
               </FeedState>
             </Section>}
 
+            {/* 說明 */}
             {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
               <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📡 資料來源</p>
               <p>加密貨幣：Binance + OKX + CoinGecko 合併（幾百個幣）</p>
               <p>期貨資料：Binance Futures（資金費率/OI/多空比/Taker CVD）</p>
               <p>K 線：Binance WebSocket 即時</p>
               <p>財經訊息：金十數據</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 5 個 AI 派系</p>
+              <p>🏃 趨勢跟隨 | 🔁 均值回歸 | 🏛️ SMC 機構 | 💰 期貨情緒 | 🧠 整合共識</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
               <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
