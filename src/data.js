@@ -1107,3 +1107,79 @@ export async function loadJin10Flash() {
 }
 
 export async function loadCalendar() { return null; }
+// ═══════════ 爆發掃描（多維度評分）═══════════════════════════════════════
+export async function scanExplosive(coins, top = 200) {
+  const cands = coins.slice(0, Math.min(top, coins.length));
+  const results = [];
+  for (let i = 0; i < cands.length; i += 8) {
+    const batch = cands.slice(i, i + 8);
+    const rows = await Promise.all(batch.map(async (coin) => {
+      try {
+        const [oiHist, klines1h, fundingData] = await Promise.all([
+          loadOIHist(coin, "5m", 5).catch(() => null),
+          loadKlines(coin, "1H").catch(() => null),
+          loadFundingRate(coin).catch(() => null),
+        ]);
+        return { coin, oiHist, klines1h, fundingData };
+      } catch { return { coin, oiHist: null, klines1h: null, fundingData: null }; }
+    }));
+    rows.forEach(({ coin, oiHist, klines1h, fundingData }) => {
+      let score = 0, direction = 0, oiChgPct = 0, fundingVal = 0;
+      const signals = [];
+      if (oiHist && oiHist.length >= 4) {
+        const oiNow = oiHist[oiHist.length - 1].oi;
+        const oiBase = oiHist.slice(0, -1).reduce((s, x) => s + x.oi, 0) / (oiHist.length - 1);
+        if (oiBase > 0) {
+          oiChgPct = (oiNow - oiBase) / oiBase * 100;
+          if (Math.abs(oiChgPct) > 5) {
+            score += 15;
+            signals.push(`OI ${oiChgPct > 0 ? "+" : ""}${oiChgPct.toFixed(1)}%`);
+            const pc = coin.change || 0;
+            if (oiChgPct > 0 && pc > 0) direction += 1;
+            else if (oiChgPct > 0 && pc < -1) direction -= 1;
+            else if (oiChgPct < 0 && pc > 1) direction += 0.5;
+            else if (oiChgPct < 0 && pc < 0) direction -= 0.5;
+          }
+        }
+      }
+      if (fundingData && fundingData.funding != null) {
+        fundingVal = fundingData.funding * 100;
+        if (fundingVal > 0.05) { score += 20; direction -= 1; signals.push(`Funding +${fundingVal.toFixed(3)}% 多頭過熱`); }
+        else if (fundingVal < -0.05) { score += 20; direction += 1; signals.push(`Funding ${fundingVal.toFixed(3)}% 空頭擠倉`); }
+      }
+      if (klines1h && klines1h.length >= 30) {
+        const closes = klines1h.map(c => c.c);
+        const vols = klines1h.map(c => c.v);
+        const n = closes.length - 1;
+        const getBBW = (ei) => {
+          if (ei < 19) return null;
+          const sl = closes.slice(ei - 19, ei + 1);
+          const m = sl.reduce((a, b) => a + b, 0) / 20;
+          const s = Math.sqrt(sl.reduce((v, x) => v + (x - m) ** 2, 0) / 20);
+          return m > 0 ? (s * 4) / m * 100 : null;
+        };
+        const curBBW = getBBW(n);
+        const histBBWs = [];
+        for (let j = n - 29; j < n; j++) { const w = getBBW(j); if (w != null) histBBWs.push(w); }
+        if (curBBW != null && histBBWs.length >= 10 && curBBW <= Math.min(...histBBWs) * 1.2) { score += 20; signals.push("布林帶擠壓"); }
+        const avgVol = vols.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
+        if (avgVol > 0) {
+          const vr = vols[n] / avgVol;
+          if (vr >= 2) { score += 10; signals.push(`量能 ×${vr.toFixed(1)}`); if (closes[n] > closes[n - 1]) direction += 0.5; else direction -= 0.5; }
+        }
+        const smcR = analyzeSMC(klines1h);
+        if (smcR) {
+          if (smcR.signal.includes("強力做多")) { score += 20; direction += 2; signals.push("SMC 強力做多"); }
+          else if (smcR.signal.includes("做多")) { score += 10; direction += 1; signals.push("SMC 做多"); }
+          else if (smcR.signal.includes("強力做空")) { score += 20; direction -= 2; signals.push("SMC 強力做空"); }
+          else if (smcR.signal.includes("做空")) { score += 10; direction -= 1; signals.push("SMC 做空"); }
+        }
+      }
+      if (score >= 25 && signals.length >= 2) {
+        results.push({ symbol: coin.symbol, name: coin.name, label: coin.label, price: coin.price, change: coin.change || 0, score: Math.min(score, 100), direction: direction >= 1 ? "long" : direction <= -1 ? "short" : "neutral", signals, oiChgPct, fundingVal, ts: Date.now(), binanceSymbol: coin.binanceSymbol, cat: "crypto" });
+      }
+    });
+    if (i + 8 < cands.length) await new Promise(r => setTimeout(r, 300));
+  }
+  return results.sort((a, b) => b.score - a.score).slice(0, 40);
+}
