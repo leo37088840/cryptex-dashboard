@@ -247,19 +247,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coinsLoaded]);
 
-  // 爆發掃描
+  // 爆發掃描（進分頁自動掃 + 每 5 分鐘自動刷新）
   useEffect(() => {
     if (sideTab !== "alerts" || alertSubTab !== "explosive" || !coinsLoaded) return;
-    if (explosive && Date.now() - explosiveTs < 5 * 60 * 1000) return;
     let cancel = false;
-    setExplosiveLoading(true);
-    scanExplosive(coins, 200).then((r) => {
+    async function run() {
       if (cancel) return;
-      setExplosive(r); setExplosiveTs(Date.now()); setExplosiveLoading(false);
-    }).catch(() => { if (!cancel) setExplosiveLoading(false); });
-    return () => { cancel = true; };
+      setExplosiveLoading(true);
+      try {
+        const r = await scanExplosive(coins, 200);
+        if (cancel) return;
+        setExplosive(r); setExplosiveTs(Date.now());
+      } catch {}
+      if (!cancel) setExplosiveLoading(false);
+    }
+    if (!explosive || Date.now() - explosiveTs >= 5 * 60 * 1000) run();
+    const iv = setInterval(run, 5 * 60 * 1000);
+    return () => { cancel = true; clearInterval(iv); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sideTab, alertSubTab, coinsLoaded, explosiveTs]);
+  }, [sideTab, alertSubTab, coinsLoaded]);
 
   // 多 AI 個別分析（5 個派系）
   useEffect(() => {
@@ -563,7 +569,7 @@ export default function App() {
               </>}
               {alertSubTab === "explosive" && <>
                 <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🚀 即將爆發幣種掃描</div><div style={{ color: "#4a5568", fontSize: 9 }}>OI + Funding + 布林帶 + 量能 + SMC 五維評分</div></div>
+                  <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🚀 即將爆發幣種掃描</div><div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動掃描 · OI+Funding+布林帶+量能+SMC</div></div>
                   <button onClick={() => setExplosiveTs(0)} disabled={explosiveLoading} style={{ background: explosiveLoading ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: explosiveLoading ? 0.5 : 1 }}>{explosiveLoading ? "掃描中..." : "↻ 刷新"}</button>
                 </div>
                 {explosiveLoading && !explosive && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 20-30 秒...</div>}
@@ -592,7 +598,7 @@ export default function App() {
                   })}
                   <div style={{ color: "#4a5568", fontSize: 9, textAlign: "center", padding: "4px" }}>掃描 200 幣 · {new Date(explosiveTs).toLocaleTimeString()}</div>
                 </>}
-                {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>點「↻ 刷新」開始掃描</div>}
+                {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>準備自動掃描中...</div>}
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
                   <p style={{ color: "#787b86", marginBottom: 4 }}>評分說明（滿分 100）：</p>
                   <p>· OI 暴增 &gt;5% → +15 · Funding 極值 → +20</p>
@@ -620,7 +626,7 @@ export default function App() {
               <p>期貨資料：Binance Futures（資金費率/OI/多空比）</p>
               <p>K 線：Binance WebSocket 即時 · 財經訊息：金十數據</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🚀 爆發掃描評分</p>
-              <p>OI暴增+Funding極值+布林帶擠壓+量能爆發+SMC方向，五維綜合評分，25分以上才顯示。</p>
+              <p>OI暴增+Funding極值+布林帶擠壓+量能爆發+SMC方向，五維綜合評分，每 5 分鐘自動掃描。</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 5 個 AI 派系</p>
               <p>🏃 趨勢跟隨 | 🔁 均值回歸 | 🏛️ SMC 機構 | 💰 期貨情緒 | 🧠 整合共識</p>
             </div>}
