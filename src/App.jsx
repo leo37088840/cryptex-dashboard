@@ -359,7 +359,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
       <div className="glass" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "0 16px", display: "flex", alignItems: "center", height: 50, gap: 14, flexShrink: 0, position: "relative", zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <div style={{ width: 30, height: 30, borderRadius: 9, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, boxShadow: "0 0 18px -2px rgba(247,147,26,0.55)" }}>₿</div>
-          <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 3, background: "linear-gradient(90deg,#fff,#9fb4d4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>CRYPTEX</span>
+          <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 3, color: "#e6edf3" }}>CRYPTEX</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginLeft: "auto" }}>
           {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
@@ -421,7 +421,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
           <div className="glass-sub" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "12px 16px", flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div style={{ display: "flex", flexDirection: "column" }}>
-                <span className="mono" style={{ fontSize: 24, fontWeight: 700, background: `linear-gradient(90deg,#fff,${up ? "#7fe7d4" : "#ffb3b0"})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>${fmtPr(displayPrice)}</span>
+                <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: up ? "#3dd9c4" : "#ff8a87" }}>${fmtPr(displayPrice)}</span>
                 <span className="mono" style={{ color: "#5a6b80", fontSize: 10 }}>{selected?.symbol} · 加密貨幣</span>
               </div>
               <div style={{ marginLeft: "auto", textAlign: "right" }}>
