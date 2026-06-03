@@ -17,19 +17,20 @@ function useIsMobile() {
   }, []);
   return m;
 }
+
 function Section({ title, color = "#58a6ff", badge, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ border: "1px solid #1a2535", borderRadius: 8, overflow: "hidden", marginBottom: 8 }}>
-      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "#0d1520", border: "none", borderBottom: open ? "1px solid #1a2535" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <div style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />
-          <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{title}</span>
-          {badge && <span style={{ background: color + "22", color, fontSize: 9, padding: "1px 5px", borderRadius: 3, fontFamily: "monospace" }}>{badge}</span>}
+    <div className="glass" style={{ borderRadius: 12, overflow: "hidden", marginBottom: 9 }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "transparent", border: "none", borderBottom: open ? "1px solid rgba(255,255,255,0.06)" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", cursor: "pointer" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, boxShadow: `0 0 8px ${color}` }} />
+          <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "'Sora',sans-serif", fontWeight: 700, letterSpacing: 0.5 }}>{title}</span>
+          {badge && <span className="mono" style={{ background: color + "22", color, fontSize: 9, padding: "1px 6px", borderRadius: 4 }}>{badge}</span>}
         </div>
-        <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
+        <span style={{ color: "#5a6b80", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
       </button>
-      {open && <div style={{ padding: 12 }}>{children}</div>}
+      {open && <div style={{ padding: 13 }}>{children}</div>}
     </div>
   );
 }
@@ -54,8 +55,15 @@ function fmtFeedTime(t) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 const SearchInput = ({ value, onChange }) => (
-  <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="搜尋..." style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }} />
+  <input
+    value={value}
+    onChange={(e) => onChange(e.target.value)}
+    placeholder="搜尋..."
+    style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }}
+  />
 );
+
+// AI 卡片
 function AICard({ ai, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
   if (!ai) return null;
@@ -73,7 +81,9 @@ function AICard({ ai, defaultOpen = false }) {
         <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
       </button>
       {open && <div style={{ padding: "0 10px 10px", borderTop: "1px solid #1a2535" }}>
-        {ai.reasons.map((r, i) => <div key={i} style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.6, padding: "2px 0" }}>· {r}</div>)}
+        {ai.reasons.map((r, i) => (
+          <div key={i} style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.6, padding: "2px 0" }}>· {r}</div>
+        ))}
       </div>}
     </div>
   );
@@ -106,7 +116,7 @@ export default function App() {
   const [explosiveLoading, setExplosiveLoading] = useState(false);
   const [explosiveTs, setExplosiveTs] = useState(0);
 
-  const lastSig = { current: null };
+  const lastSig = { current: null }; // 暫不用 useRef 簡化
 
   const filtered = useMemo(() => {
     if (!search) return coins;
@@ -115,6 +125,7 @@ export default function App() {
   }, [search, coins]);
   const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
+  // 載入加密貨幣列表
   useEffect(() => {
     let cancel = false;
     async function run() {
@@ -130,6 +141,7 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, [search]);
 
+  // 金十快訊
   useEffect(() => {
     let cancel = false;
     async function run() { const r = await loadJin10Flash(); if (!cancel) setJ10flash(r); }
@@ -137,6 +149,7 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, []);
 
+  // 載入 K 線（後台用，給指標/SMC/AI 計算，UI 不畫圖）
   useEffect(() => {
     if (!selected) return;
     let cancel = false;
@@ -151,6 +164,7 @@ export default function App() {
     return () => { cancel = true; clearInterval(iv); };
   }, [selected, tf]);
 
+  // SMC（只在新 K 棒時重算）
   const lastCandleT = candles.length > 0 ? candles[candles.length - 1].t : 0;
   useEffect(() => {
     if (candles.length < 40 || !selected) { setSmc(null); return; }
@@ -171,12 +185,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastCandleT, selected, notifOn]);
 
+  // SMC 多時區
   useEffect(() => {
     if (!selected) return; let cancel = false;
     analyzeSMCMulti(selected).then((r) => { if (!cancel) setSmcMulti(r); });
     return () => { cancel = true; };
   }, [selected]);
 
+  // 多週期漲跌
   useEffect(() => {
     if (!selected) { setPeriodChg(null); return; }
     let cancel = false;
@@ -185,6 +201,7 @@ export default function App() {
     return () => { cancel = true; };
   }, [selected]);
 
+  // Trade WebSocket（即時價）
   useEffect(() => {
     if (!selected || selected.cat !== "crypto") return;
     let lastTs = 0;
@@ -207,8 +224,8 @@ export default function App() {
     return () => off();
   }, [selected]);
 
+  // 推薦掃描
   const coinsLoaded = coins.length > 0;
-
   useEffect(() => {
     if (sideTab !== "recs" || !coinsLoaded) return;
     if (recs && Date.now() - recsTs < 5 * 60 * 1000) return;
@@ -222,6 +239,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sideTab, coinsLoaded, recsTs]);
 
+  // 警報掃描
   useEffect(() => {
     if (!coinsLoaded) return;
     let cancel = false;
@@ -261,6 +279,7 @@ export default function App() {
       } catch {}
       if (!cancel) setExplosiveLoading(false);
     }
+    // 進入時若無資料或超過 5 分鐘就立刻掃
     if (!explosive || Date.now() - explosiveTs >= 5 * 60 * 1000) run();
     const iv = setInterval(run, 5 * 60 * 1000);
     return () => { cancel = true; clearInterval(iv); };
@@ -304,8 +323,27 @@ export default function App() {
   };
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#070b10", color: "#c9d1d9", fontFamily: "system-ui,sans-serif", overflow: "hidden" }}>
-      <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:#1a2535;border-radius:2px}button{cursor:pointer;outline:none}@keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}`}</style>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", color: "#c9d1d9", fontFamily: "'Sora',system-ui,sans-serif", overflow: "hidden", background: "radial-gradient(ellipse 90% 55% at 18% -5%, rgba(247,147,26,0.10), transparent 60%), radial-gradient(ellipse 70% 50% at 85% 8%, rgba(98,126,234,0.10), transparent 55%), linear-gradient(180deg,#070c12 0%,#05080c 100%)" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2a3b52,#1a2535);border-radius:3px}
+::-webkit-scrollbar-track{background:transparent}
+button{cursor:pointer;outline:none;font-family:inherit}
+.mono{font-family:'JetBrains Mono',monospace}
+.glass{background:rgba(13,21,32,0.55);backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);border:1px solid rgba(255,255,255,0.07)}
+.glass-sub{background:rgba(10,17,26,0.5);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.coin-row{transition:background .18s ease,border-color .18s ease,transform .12s ease}
+.coin-row:hover{background:rgba(88,166,255,0.06)!important;transform:translateX(2px)}
+.tab-btn{transition:color .2s ease,background .2s ease}
+.lift{transition:transform .15s ease,box-shadow .2s ease}
+.lift:hover{transform:translateY(-1px)}
+@keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes glowPulse{0%,100%{box-shadow:0 0 24px -6px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.04)}50%{box-shadow:0 0 40px -4px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.08)}}
+@keyframes ringSpin{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--off)}}
+.signal-card{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite}
+.fade-in{animation:fadeUp .35s ease}`}</style>
 
       {notif && (
         <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, animation: "slideDown .35s ease-out", background: "#0d1520", border: `1.5px solid ${notif.color}`, color: notif.color, borderRadius: 12, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 30px rgba(0,0,0,.6)", maxWidth: "92vw" }}>
@@ -318,20 +356,23 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ background: "#0a0f18", borderBottom: "1px solid #1a2535", padding: "0 14px", display: "flex", alignItems: "center", height: 46, gap: 14, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>₿</div>
-          <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, letterSpacing: 2, color: "#e6edf3" }}>CRYPTEX</span>
+      <div className="glass" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "0 16px", display: "flex", alignItems: "center", height: 50, gap: 14, flexShrink: 0, position: "relative", zIndex: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 9, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, boxShadow: "0 0 18px -2px rgba(247,147,26,0.55)" }}>₿</div>
+          <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 3, background: "linear-gradient(90deg,#fff,#9fb4d4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>CRYPTEX</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
-          {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span style={{ color: smc.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 4, padding: "1px 6px" }}>{smc.signal}</span>}
-          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950" }} />
-          <span style={{ color: "#354050", fontSize: 9, fontFamily: "monospace" }}>{status}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginLeft: "auto" }}>
+          {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950", boxShadow: "0 0 8px #3fb950" }} />
+          <span className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>{status}</span>
         </div>
       </div>
 
+      {/* 手機版：商品列表 chips（橫向） */}
       {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
-        <div style={{ padding: "6px 8px" }}><SearchInput key="search-box" value={search} onChange={setSearch} /></div>
+        <div style={{ padding: "6px 8px" }}>
+          <SearchInput key="search-box" value={search} onChange={setSearch} />
+        </div>
         <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
           {visibleList.map((coin) => {
             const live = coins.find((c) => c.symbol === coin.symbol) || coin;
@@ -347,15 +388,18 @@ export default function App() {
       </div>}
 
       <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden", minHeight: 0 }}>
+        {/* 桌面版：左側商品列表 */}
         {!isMobile && <div style={{ width: 200, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          <div style={{ padding: "8px" }}><SearchInput key="search-box" value={search} onChange={setSearch} /></div>
+          <div style={{ padding: "8px" }}>
+            <SearchInput key="search-box" value={search} onChange={setSearch} />
+          </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
             {visibleList.map((coin) => {
               const live = coins.find((c) => c.symbol === coin.symbol) || coin;
               const active = selected?.symbol === coin.symbol;
               return (
-                <button key={coin.symbol} onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "#0f1e2e" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
+                <button key={coin.symbol} className="coin-row" onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "linear-gradient(90deg,rgba(88,166,255,0.12),transparent)" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
                     <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.label ? (coin.label).slice(0, 6) : ""}{fmtVol(live.volume) ? (coin.label ? " · " : "") + fmtVol(live.volume) : ""}</div>
@@ -371,20 +415,23 @@ export default function App() {
           </div>
         </div>}
 
+        {/* 主分析區（無 K 線） */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <div style={{ background: "#0d1520", borderBottom: "1px solid #1a2535", padding: "10px 14px", flexShrink: 0 }}>
+          {/* 價格 header */}
+          <div className="glass-sub" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "12px 16px", flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div style={{ display: "flex", flexDirection: "column" }}>
-                <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: "#e6edf3" }}>${fmtPr(displayPrice)}</span>
-                <span style={{ color: "#354050", fontSize: 10, fontFamily: "monospace" }}>{selected?.symbol} · 加密貨幣</span>
+                <span className="mono" style={{ fontSize: 24, fontWeight: 700, background: `linear-gradient(90deg,#fff,${up ? "#7fe7d4" : "#ffb3b0"})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>${fmtPr(displayPrice)}</span>
+                <span className="mono" style={{ color: "#5a6b80", fontSize: 10 }}>{selected?.symbol} · 加密貨幣</span>
               </div>
               <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                <div style={{ color: up ? "#26a69a" : "#ef5350", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{up ? "▲" : "▼"} {Math.abs(change24h).toFixed(2)}%</div>
-                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>24h 變化</div>
+                <div className="mono" style={{ color: up ? "#26a69a" : "#ef5350", fontSize: 14, fontWeight: 700, textShadow: `0 0 14px ${up ? "#26a69a55" : "#ef535055"}` }}>{up ? "▲" : "▼"} {Math.abs(change24h).toFixed(2)}%</div>
+                <div className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>24h 變化</div>
               </div>
             </div>
           </div>
 
+          {/* 多週期 bar */}
           {periodChg && <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
             {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([lbl, val]) => (
               <div key={lbl} style={{ flex: 1, minWidth: 52, textAlign: "center", padding: "0 4px" }}>
@@ -394,6 +441,7 @@ export default function App() {
             ))}
           </div>}
 
+          {/* 時間框架（給分析用） */}
           <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "6px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>分析時間框架:</span>
             {INTERVALS.map((iv) => (
@@ -401,36 +449,47 @@ export default function App() {
             ))}
           </div>
 
-          <div style={{ display: "flex", borderBottom: "1px solid #1a2535", flexShrink: 0, overflowX: "auto", background: "#080d14" }}>
+          {/* 分頁 */}
+          <div className="glass-sub" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, overflowX: "auto" }}>
             {[["smc", "SMC"], ["ai", "AI 分析"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
-              <button key={id} onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "#0d1520" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#4a5568", padding: "10px 0", fontSize: 11, fontFamily: "monospace" }}>{label}</button>
+              <button key={id} className="tab-btn" onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "linear-gradient(180deg,rgba(88,166,255,0.12),transparent)" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#5a6b80", padding: "11px 0", fontSize: 11, fontWeight: sideTab === id ? 700 : 500, fontFamily: "'Sora',sans-serif" }}>{label}</button>
             ))}
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
-
+            {/* SMC */}
             {sideTab === "smc" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
                 <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{notifOn ? "✓ 已開啟" : "開啟通知"}</button>
               </div>
               {smc ? <>
-                <div style={{ background: `${smc.color}14`, border: `1px solid ${smc.color}`, borderRadius: 10, padding: 14, marginBottom: 10, textAlign: "center" }}>
-                  <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>SMC 綜合訊號 · {selected?.symbol} · {tf}</div>
-                  <div style={{ color: smc.color, fontSize: 26, fontWeight: 800, fontFamily: "monospace", letterSpacing: 1 }}>{smc.signal}</div>
-                  <div style={{ marginTop: 8, height: 5, borderRadius: 3, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${smc.confidence}%`, height: "100%", background: smc.color }} /></div>
-                  <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 4 }}>信心度 {smc.confidence}%</div>
+                <div className="signal-card" style={{ "--glow": `${smc.color}66`, background: `linear-gradient(145deg, ${smc.color}1f, rgba(13,21,32,0.6))`, border: `1px solid ${smc.color}88`, borderRadius: 16, padding: "18px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16 }}>
+                  <div style={{ position: "relative", width: 76, height: 76, flexShrink: 0 }}>
+                    <svg width="76" height="76" style={{ transform: "rotate(-90deg)" }}>
+                      <circle cx="38" cy="38" r="32" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
+                      <circle cx="38" cy="38" r="32" fill="none" stroke={smc.color} strokeWidth="6" strokeLinecap="round" strokeDasharray={2 * Math.PI * 32} strokeDashoffset={2 * Math.PI * 32 * (1 - (smc.confidence || 0) / 100)} style={{ transition: "stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)", filter: `drop-shadow(0 0 4px ${smc.color})` }} />
+                    </svg>
+                    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                      <span className="mono" style={{ color: smc.color, fontSize: 18, fontWeight: 700, lineHeight: 1 }}>{smc.confidence}</span>
+                      <span className="mono" style={{ color: "#5a6b80", fontSize: 8 }}>信心</span>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="mono" style={{ color: "#5a6b80", fontSize: 9, marginBottom: 5, letterSpacing: 1 }}>SMC 綜合訊號 · {selected?.symbol} · {tf}</div>
+                    <div style={{ color: smc.color, fontSize: 30, fontWeight: 800, fontFamily: "'Sora',sans-serif", letterSpacing: 1, lineHeight: 1, textShadow: `0 0 20px ${smc.color}55` }}>{smc.signal}</div>
+                  </div>
                 </div>
                 <Section title="多時區 SMC 結構" color="#26a69a" badge="MTF">
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                     {smcMulti.map(({ tf: t, result: r }) => {
                       const sig = r ? r.signal : "資料不足";
                       const col = r ? r.color : "#4a5568";
                       return (
-                        <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", background: "#0d1520", borderRadius: 6, border: `1px solid ${r ? col + "44" : "#1a2535"}` }}>
-                          <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, width: 36 }}>{t}</span>
-                          <span style={{ color: col, fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 64 }}>{sig}</span>
-                          {r && <><span style={{ flex: 1, color: "#4a5568", fontSize: 9, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.structure}</span><span style={{ color: col, fontSize: 9, fontFamily: "monospace" }}>{r.confidence}%</span></>}
+                        <div key={t} className="lift" style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: `linear-gradient(90deg, ${r ? col + "14" : "rgba(13,21,32,0.5)"}, rgba(13,21,32,0.3))`, borderRadius: 8, border: `1px solid ${r ? col + "44" : "rgba(255,255,255,0.05)"}` }}>
+                          <span className="mono" style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700, width: 36 }}>{t}</span>
+                          <span className="mono" style={{ color: col, fontSize: 11, fontWeight: 700, minWidth: 64 }}>{sig}</span>
+                          {r && <><span className="mono" style={{ flex: 1, color: "#5a6b80", fontSize: 9, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.structure}</span><span className="mono" style={{ color: col, fontSize: 9 }}>{r.confidence}%</span></>}
                         </div>
                       );
                     })}
@@ -447,6 +506,8 @@ export default function App() {
                 </Section>
               </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
             </>}
+
+
 
             {sideTab === "ai" && <>
               {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
@@ -501,9 +562,13 @@ export default function App() {
               </Section>
             </>}
 
+            {/* 推薦 */}
             {sideTab === "recs" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div><div style={{ color: "#4a5568", fontSize: 9 }}>掃前 200 大幣 · SMC 評分</div></div>
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>掃前 200 大幣 · SMC 評分</div>
+                </div>
                 <button onClick={() => setRecsTs(0)} disabled={recsLoading} style={{ background: recsLoading ? "#1a2535" : "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: recsLoading ? 0.5 : 1 }}>{recsLoading ? "掃描中..." : "↻ 刷新"}</button>
               </div>
               {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 10-15 秒...</div>}
@@ -513,7 +578,10 @@ export default function App() {
                   {recs.longs.map((r) => (
                     <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
                       <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
-                      <div style={{ flex: 1, minWidth: 40 }}><div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div><div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div></div>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
                       <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
                       <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
                     </button>
@@ -524,7 +592,10 @@ export default function App() {
                   {recs.shorts.map((r) => (
                     <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
                       <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
-                      <div style={{ flex: 1, minWidth: 40 }}><div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div><div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div></div>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
                       <span style={{ color: "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
                       <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
                     </button>
@@ -534,12 +605,16 @@ export default function App() {
               </>}
             </>}
 
+            {/* 警報 */}
             {sideTab === "alerts" && <>
+              {/* 子標籤 */}
               <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
                 {[["alerts", "⚡ 警報"], ["explosive", "🚀 爆發掃描"]].map(([id, label]) => (
                   <button key={id} onClick={() => setAlertSubTab(id)} style={{ flex: 1, background: alertSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${alertSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: alertSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
                 ))}
               </div>
+
+              {/* 警報子頁 */}
               {alertSubTab === "alerts" && <>
                 <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
                   <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
@@ -554,7 +629,9 @@ export default function App() {
                           <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{al.name}</span>
                           <span style={{ color: al.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{al.type}</span>
                         </div>
-                        <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>OI {al.oiChgPct > 0 ? "+" : ""}{al.oiChgPct.toFixed(2)}% · 24h 價 {al.change > 0 ? "+" : ""}{al.change.toFixed(2)}% · {new Date(al.ts).toLocaleTimeString()}</div>
+                        <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>
+                          OI {al.oiChgPct > 0 ? "+" : ""}{al.oiChgPct.toFixed(2)}% · 24h 價 {al.change > 0 ? "+" : ""}{al.change.toFixed(2)}% · {new Date(al.ts).toLocaleTimeString()}
+                        </div>
                       </div>
                     </button>
                   ))}
@@ -567,9 +644,14 @@ export default function App() {
                   <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升</p>
                 </div>
               </>}
+
+              {/* 爆發掃描子頁 */}
               {alertSubTab === "explosive" && <>
                 <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🚀 即將爆發幣種掃描</div><div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動掃描 · OI+Funding+布林帶+量能+SMC</div></div>
+                  <div>
+                    <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🚀 即將爆發幣種掃描</div>
+                    <div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動掃描 · OI+Funding+布林帶+量能+SMC</div>
+                  </div>
                   <button onClick={() => setExplosiveTs(0)} disabled={explosiveLoading} style={{ background: explosiveLoading ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: explosiveLoading ? 0.5 : 1 }}>{explosiveLoading ? "掃描中..." : "↻ 刷新"}</button>
                 </div>
                 {explosiveLoading && !explosive && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 20-30 秒...</div>}
@@ -588,7 +670,9 @@ export default function App() {
                                 <span style={{ marginLeft: "auto", background: col, color: "#000", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 6px", borderRadius: 3 }}>{ex.score}分</span>
                               </div>
                               <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                                {ex.signals.map((s, si) => <span key={si} style={{ background: "#1a2535", color: "#8b949e", fontSize: 8, fontFamily: "monospace", padding: "1px 5px", borderRadius: 3 }}>{s}</span>)}
+                                {ex.signals.map((s, si) => (
+                                  <span key={si} style={{ background: "#1a2535", color: "#8b949e", fontSize: 8, fontFamily: "monospace", padding: "1px 5px", borderRadius: 3 }}>{s}</span>
+                                ))}
                               </div>
                             </div>
                           </button>
@@ -601,12 +685,17 @@ export default function App() {
                 {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>準備自動掃描中...</div>}
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
                   <p style={{ color: "#787b86", marginBottom: 4 }}>評分說明（滿分 100）：</p>
-                  <p>· OI 暴增 &gt;5% → +15 · Funding 極值 → +20</p>
-                  <p>· 布林帶擠壓 → +20 · 量能暴增 → +10 · SMC → +10~20</p>
+                  <p>· OI 暴增 >5% → +15</p>
+                  <p>· Funding 極值 → +20</p>
+                  <p>· 布林帶擠壓（能量蓄積）→ +20</p>
+                  <p>· 成交量暴增 2 倍以上 → +10</p>
+                  <p>· SMC 方向確認 → +10~20</p>
                 </div>
               </>}
             </>}
 
+
+            {/* 金十 */}
             {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
               <FeedState state={j10flash}>
                 {Array.isArray(j10flash) && j10flash.map((n, i) => (
@@ -620,20 +709,24 @@ export default function App() {
               </FeedState>
             </Section>}
 
+            {/* 說明 */}
             {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
               <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📡 資料來源</p>
-              <p>加密貨幣：Binance + OKX + CoinGecko 合併</p>
-              <p>期貨資料：Binance Futures（資金費率/OI/多空比）</p>
-              <p>K 線：Binance WebSocket 即時 · 財經訊息：金十數據</p>
-              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🚀 爆發掃描評分</p>
-              <p>OI暴增+Funding極值+布林帶擠壓+量能爆發+SMC方向，五維綜合評分，每 5 分鐘自動掃描。</p>
+              <p>加密貨幣：Binance + OKX + CoinGecko 合併（幾百個幣）</p>
+              <p>期貨資料：Binance Futures（資金費率/OI/多空比/Taker CVD）</p>
+              <p>K 線：Binance WebSocket 即時</p>
+              <p>財經訊息：金十數據</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 5 個 AI 派系</p>
               <p>🏃 趨勢跟隨 | 🔁 均值回歸 | 🏛️ SMC 機構 | 💰 期貨情緒 | 🧠 整合共識</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
+              <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
+              <p>每 5 分鐘掃 200 大幣推薦清單；每 3 分鐘掃 OI 異常警報。</p>
             </div>}
-
           </div>
         </div>
       </div>
     </div>
   );
 }
+
