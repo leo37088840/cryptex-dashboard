@@ -3,7 +3,7 @@ import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
   calcSMA, calcMACD, calcRSI, calcKDJ,
   loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges,
-  scanRecommendations, scanAnomalies, analyzeMultiAI, scanExplosive,
+  scanRecommendations, scanAnomalies, analyzeMultiAI, scanExplosive, scanAutoTrades,
 } from "./data.js";
 
 const INTERVALS = ["15m", "1H", "4H", "1D"];
@@ -373,7 +373,218 @@ function TradeCard({ trade, livePrice, onDelete, onClose }) {
   );
 }
 
+// ═══════════ 自動推薦單（系統自動掃描+建單+監控） ═══════════════════════════
+const AUTO_TRADES_KEY = "cryptex_auto_trades_v1";
+const AUTO_TRADES_TS_KEY = "cryptex_auto_trades_ts_v1";
+
+function loadAutoTrades() {
+  try {
+    const raw = localStorage.getItem(AUTO_TRADES_KEY);
+    return raw ? JSON.parse(raw) : { longs: [], shorts: [] };
+  } catch { return { longs: [], shorts: [] }; }
+}
+function saveAutoTrades(data) {
+  try { localStorage.setItem(AUTO_TRADES_KEY, JSON.stringify(data)); } catch {}
+}
+function loadAutoTradesTs() {
+  try { return parseInt(localStorage.getItem(AUTO_TRADES_TS_KEY) || "0", 10); } catch { return 0; }
+}
+function saveAutoTradesTs(ts) {
+  try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
+}
+
+function AutoTradeCard({ trade, livePrice, onRemove }) {
+  const isLong = trade.direction === "long";
+  const dirColor = isLong ? "#26a69a" : "#ef5350";
+  const dirLabel = isLong ? "做多" : "做空";
+  const fmt = (v) => v == null ? "—" : (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+
+  let pnlPct = null;
+  if (livePrice && trade.entry) {
+    pnlPct = isLong ? ((livePrice - trade.entry) / trade.entry) * 100 : ((trade.entry - livePrice) / trade.entry) * 100;
+  }
+
+  function tpHit(tp) {
+    if (!tp || !livePrice) return false;
+    return isLong ? livePrice >= tp : livePrice <= tp;
+  }
+  function slHit() {
+    if (!livePrice) return false;
+    return isLong ? livePrice <= trade.sl : livePrice >= trade.sl;
+  }
+
+  const tps = [["TP1", trade.tp1], ["TP2", trade.tp2], ["TP3", trade.tp3]].filter(([, v]) => v != null);
+  const hitTps = tps.filter(([, v]) => tpHit(v));
+  const finished = slHit() || hitTps.length === tps.length;
+
+  let statusBadge = null;
+  if (slHit()) statusBadge = { label: "止損 SL", color: "#ef5350" };
+  else if (hitTps.length > 0) statusBadge = { label: `${hitTps[hitTps.length - 1][0]} 達成`, color: "#26a69a" };
+
+  return (
+    <div style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{trade.name || trade.symbol}</span>
+        <span style={{ color: dirColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700, background: `${dirColor}1a`, padding: "1px 6px", borderRadius: 4 }}>{dirLabel}</span>
+        <span style={{ background: "#1a2535", color: "#a78bfa", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 6px", borderRadius: 4 }}>評分 {trade.finalScore}</span>
+        {statusBadge && <span style={{ color: statusBadge.color, fontSize: 9, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${statusBadge.color}`, padding: "1px 6px", borderRadius: 4 }}>{statusBadge.label}</span>}
+        <span style={{ marginLeft: "auto", color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{new Date(trade.ts).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+      </div>
+
+      {pnlPct != null && (
+        <div style={{ textAlign: "center", padding: "6px 0", marginBottom: 6, background: pnlPct >= 0 ? "#26a69a14" : "#ef535014", borderRadius: 6 }}>
+          <span className="mono" style={{ color: pnlPct >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
+          <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginLeft: 6 }}>未實現盈虧 · 現價 {fmt(livePrice)}</span>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10, fontFamily: "monospace" }}>
+        <div style={{ background: "#0a1218", borderRadius: 5, padding: "5px 8px" }}>
+          <div style={{ color: "#5a6b80", fontSize: 9 }}>進場價</div>
+          <div style={{ color: "#c9d1d9", fontWeight: 700 }}>{fmt(trade.entry)}</div>
+        </div>
+        <div style={{ background: slHit() ? "#ef535022" : "#0a1218", borderRadius: 5, padding: "5px 8px", border: slHit() ? "1px solid #ef5350" : "none" }}>
+          <div style={{ color: "#ef5350", fontSize: 9 }}>SL</div>
+          <div style={{ color: "#ef5350", fontWeight: 700 }}>{fmt(trade.sl)}</div>
+        </div>
+        {tps.map(([label, val]) => (
+          <div key={label} style={{ background: tpHit(val) ? "#26a69a22" : "#0a1218", borderRadius: 5, padding: "5px 8px", border: tpHit(val) ? "1px solid #26a69a" : "none" }}>
+            <div style={{ color: "#26a69a", fontSize: 9 }}>{label} {tpHit(val) ? "✓" : ""}</div>
+            <div style={{ color: "#26a69a", fontWeight: 700 }}>{fmt(val)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginTop: 6 }}>{trade.signal} · {trade.structure}</div>
+
+      {trade.aiConsensus && (
+        <div style={{ color: trade.aiConsensus.color, fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>
+          🧠 AI共識: {trade.aiConsensus.direction} {trade.aiConsensus.confidence}%
+        </div>
+      )}
+
+      {finished && (
+        <button onClick={() => onRemove(trade.id)} style={{ width: "100%", marginTop: 8, background: "#1a2535", border: "none", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>
+          {slHit() ? "已觸及止損，移除" : "已達最終止盈，移除"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AutoTrades({ coins }) {
+  const [data, setData] = useState(() => {
+    const d = loadAutoTrades();
+    // 補上 id（相容舊資料）
+    d.longs = (d.longs || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
+    d.shorts = (d.shorts || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
+    return d;
+  });
+  const [scanning, setScanning] = useState(false);
+  const [lastScanTs, setLastScanTs] = useState(() => loadAutoTradesTs());
+  const [livePrices, setLivePrices] = useState({});
+
+  useEffect(() => { saveAutoTrades(data); }, [data]);
+  useEffect(() => { saveAutoTradesTs(lastScanTs); }, [lastScanTs]);
+
+  // 即時價格（用 coins 列表）
+  useEffect(() => {
+    if (!coins || !coins.length) return;
+    const map = {};
+    [...data.longs, ...data.shorts].forEach((t) => {
+      const c = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""));
+      if (c) map[t.symbol] = c.price;
+    });
+    setLivePrices((prev) => ({ ...prev, ...map }));
+  }, [coins, data]);
+
+  const PER_SIDE = 5;
+
+  async function runScan() {
+    if (!coins || !coins.length || scanning) return;
+    setScanning(true);
+    try {
+      const r = await scanAutoTrades(coins, coins.length, PER_SIDE);
+      setData((prev) => {
+        // 補空位：保留現有未結束的單，只在不足 PER_SIDE 時用新掃描結果補滿
+        function fillSide(existing, fresh) {
+          const stillOpen = existing.filter((t) => {
+            const live = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""))?.price;
+            if (!live) return true; // 抓不到價就先保留
+            const isLong = t.direction === "long";
+            const slHit = isLong ? live <= t.sl : live >= t.sl;
+            const tps = [t.tp1, t.tp2, t.tp3].filter((x) => x != null);
+            const allTpHit = tps.length > 0 && tps.every((tp) => isLong ? live >= tp : live <= tp);
+            return !slHit && !allTpHit;
+          });
+          const existingSymbols = new Set(stillOpen.map((t) => t.symbol));
+          const need = PER_SIDE - stillOpen.length;
+          const newOnes = fresh.filter((t) => !existingSymbols.has(t.symbol)).slice(0, Math.max(0, need)).map((t) => ({ ...t, id: `${t.symbol}-${t.ts}` }));
+          return [...stillOpen, ...newOnes];
+        }
+        return { longs: fillSide(prev.longs, r.longs), shorts: fillSide(prev.shorts, r.shorts) };
+      });
+      setLastScanTs(Date.now());
+    } catch {}
+    setScanning(false);
+  }
+
+  // 自動：首次進入若無資料或超過5分鐘，或現有單未滿則觸發掃描；之後每5分鐘檢查一次
+  useEffect(() => {
+    if (!coins || !coins.length) return;
+    const needScan = () => {
+      const totalSlots = data.longs.length + data.shorts.length;
+      return totalSlots < PER_SIDE * 2 || Date.now() - lastScanTs >= 5 * 60 * 1000;
+    };
+    if (needScan()) runScan();
+    const iv = setInterval(() => { if (needScan()) runScan(); }, 60 * 1000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coins]);
+
+  function removeTrade(side, id) {
+    setData((prev) => ({ ...prev, [side]: prev[side].filter((t) => t.id !== id) }));
+  }
+
+  return (
+    <>
+      <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🤖 自動推薦單</div>
+          <div style={{ color: "#4a5568", fontSize: 9 }}>全市場掃描 · SMC+AI共識+SNR 綜合評分 · 每5分鐘檢查補位</div>
+        </div>
+        <button onClick={runScan} disabled={scanning} style={{ background: scanning ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: scanning ? 0.5 : 1 }}>{scanning ? "掃描中..." : "↻ 重新掃描"}</button>
+      </div>
+
+      {scanning && data.longs.length === 0 && data.shorts.length === 0 && (
+        <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在全市場掃描並計算建議單，約 1-3 分鐘...</div>
+      )}
+
+      <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
+        {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做多標的</div>}
+        {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onRemove={(id) => removeTrade("longs", id)} />)}
+      </Section>
+
+      <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
+        {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做空標的</div>}
+        {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onRemove={(id) => removeTrade("shorts", id)} />)}
+      </Section>
+
+      {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
+
+      <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
+        <p style={{ color: "#787b86", marginBottom: 4 }}>說明：</p>
+        <p>· 進場價=現價，SL=ATR×1.5</p>
+        <p>· TP優先採用SNR壓力/支撐位，否則用ATR倍數(2x/4x/6x)</p>
+        <p>· 評分=SMC信心度40% + AI共識(方向一致)40% + 結構/SNR加分20%</p>
+        <p>· 單子觸及SL或最終TP前不會被替換，只補空位</p>
+      </div>
+    </>
+  );
+}
+
 function TradeJournal({ coins, defaultSymbol }) {
+  const [journalSubTab, setJournalSubTab] = useState("auto");
   const [trades, setTrades] = useState(() => loadTrades());
   const [showForm, setShowForm] = useState(false);
   const [livePrices, setLivePrices] = useState({});
@@ -408,6 +619,15 @@ function TradeJournal({ coins, defaultSymbol }) {
 
   return (
     <>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[["auto", "🤖 自動推薦單"], ["manual", "📝 手動紀錄"]].map(([id, label]) => (
+          <button key={id} onClick={() => setJournalSubTab(id)} style={{ flex: 1, background: journalSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${journalSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: journalSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+        ))}
+      </div>
+
+      {journalSubTab === "auto" && <AutoTrades coins={coins} />}
+
+      {journalSubTab === "manual" && <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>交易紀錄</div>
@@ -432,6 +652,7 @@ function TradeJournal({ coins, defaultSymbol }) {
           ))}
         </Section>
       )}
+      </>}
     </>
   );
 }
@@ -578,7 +799,7 @@ export default function App() {
     if (recs && Date.now() - recsTs < 5 * 60 * 1000) return;
     let cancel = false;
     setRecsLoading(true);
-    scanRecommendations(coins, 200).then((r) => {
+    scanRecommendations(coins, coins.length).then((r) => {
       if (cancel) return;
       setRecs(r); setRecsTs(Date.now()); setRecsLoading(false);
     }).catch(() => { if (!cancel) setRecsLoading(false); });
@@ -593,7 +814,7 @@ export default function App() {
     async function scan() {
       if (cancel) return;
       try {
-        const a = await scanAnomalies(coins, 200);
+        const a = await scanAnomalies(coins, coins.length);
         if (cancel) return;
         setAlerts((prev) => {
           const map = new Map();
@@ -620,7 +841,7 @@ export default function App() {
       if (cancel) return;
       setExplosiveLoading(true);
       try {
-        const r = await scanExplosive(coins, 200);
+        const r = await scanExplosive(coins, coins.length);
         if (cancel) return;
         setExplosive(r); setExplosiveTs(Date.now());
       } catch {}
@@ -946,11 +1167,11 @@ button{cursor:pointer;outline:none;font-family:inherit}
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
                   <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div>
-                  <div style={{ color: "#4a5568", fontSize: 9 }}>掃前 200 大幣 · SMC 評分</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>掃描全部商品 · SMC 評分</div>
                 </div>
                 <button onClick={() => setRecsTs(0)} disabled={recsLoading} style={{ background: recsLoading ? "#1a2535" : "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: recsLoading ? 0.5 : 1 }}>{recsLoading ? "掃描中..." : "↻ 刷新"}</button>
               </div>
-              {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 10-15 秒...</div>}
+              {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描全部商品，約 30-60 秒...</div>}
               {recs && <>
                 <Section title={`🟢 適合做多 (${recs.longs.length})`} color="#26a69a">
                   {recs.longs.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做多訊號</div>}
@@ -997,7 +1218,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
               {alertSubTab === "alerts" && <>
                 <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
                   <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
-                  <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘掃前 200 大幣 OI 變化</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘掃全部商品 OI 變化</div>
                 </div>
                 <Section title={`警報事件 (${alerts.length})`} color="#f0b90b" badge="即時">
                   {alerts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>目前無異常，每 3 分鐘自動掃描...</div>}
@@ -1033,7 +1254,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
                   </div>
                   <button onClick={() => setExplosiveTs(0)} disabled={explosiveLoading} style={{ background: explosiveLoading ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: explosiveLoading ? 0.5 : 1 }}>{explosiveLoading ? "掃描中..." : "↻ 刷新"}</button>
                 </div>
-                {explosiveLoading && !explosive && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 20-30 秒...</div>}
+                {explosiveLoading && !explosive && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描全部商品，約 1-2 分鐘...</div>}
                 {explosive && <>
                   {[["long", "🟢 多頭爆發候選", "#26a69a"], ["short", "🔴 空頭爆發候選", "#ef5350"], ["neutral", "⚡ 能量蓄積中（方向待定）", "#f0b90b"]].map(([dir, title, col]) => {
                     const items = explosive.filter(x => x.direction === dir);
@@ -1059,7 +1280,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
                       </Section>
                     );
                   })}
-                  <div style={{ color: "#4a5568", fontSize: 9, textAlign: "center", padding: "4px" }}>掃描 200 幣 · {new Date(explosiveTs).toLocaleTimeString()}</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, textAlign: "center", padding: "4px" }}>掃描全部商品 · {new Date(explosiveTs).toLocaleTimeString()}</div>
                 </>}
                 {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>準備自動掃描中...</div>}
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
@@ -1103,7 +1324,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
               <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
-              <p>每 5 分鐘掃 200 大幣推薦清單；每 3 分鐘掃 OI 異常警報。</p>
+              <p>每 5 分鐘全量掃描推薦清單；每 3 分鐘全量掃 OI 異常警報。</p>
             </div>}
           </div>
         </div>
