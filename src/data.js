@@ -295,6 +295,11 @@ export function analyzeSMC(candles) {
   if (h != null) confirms += h > 0 ? 1 : -1;
   if (r != null) confirms += r > 55 ? 1 : r < 45 ? -1 : 0;
   if (k != null && d != null) confirms += k > d ? 1 : -1;
+  const snr = calcSNR(candles);
+  if (snr) {
+    if (snr.support && snr.support.dist < 1) { bias += 0.5; reasons.push(`價格貼近支撐 ${snr.support.price.toFixed(4)} (強度${snr.support.strength})`); }
+    if (snr.resistance && snr.resistance.dist < 1) { bias -= 0.5; reasons.push(`價格貼近壓力 ${snr.resistance.price.toFixed(4)} (強度${snr.resistance.strength})`); }
+  }
   const score = bias + confirms * 0.5;
   let signal = "觀望", color = "#787b86";
   if (score >= 2.5) { signal = "強力做多"; color = "#26a69a"; }
@@ -303,7 +308,7 @@ export function analyzeSMC(candles) {
   else if (score <= -1) { signal = "做空"; color = "#ef5350"; }
   const confidence = Math.min(99, Math.round((Math.abs(score) / 5) * 100));
   return {
-    signal, color, score, confidence, structure, sweep, fvg, ob, reasons, price,
+    signal, color, score, confidence, structure, sweep, fvg, ob, reasons, price, snr,
     confirm: {
       macd: h == null ? "—" : h > 0 ? "多頭" : "空頭",
       rsi: r == null ? "—" : r > 55 ? "偏多" : r < 45 ? "偏空" : "中性",
@@ -1173,6 +1178,10 @@ export async function scanExplosive(coins, top = 200) {
           else if (smcR.signal.includes("做多")) { score += 10; direction += 1; signals.push("SMC 做多"); }
           else if (smcR.signal.includes("強力做空")) { score += 20; direction -= 2; signals.push("SMC 強力做空"); }
           else if (smcR.signal.includes("做空")) { score += 10; direction -= 1; signals.push("SMC 做空"); }
+          if (smcR.snr) {
+            if (smcR.snr.support && smcR.snr.support.dist < 0.8) { score += 10; signals.push(`貼近支撐(${smcR.snr.support.dist.toFixed(2)}%)`); direction += 0.5; }
+            if (smcR.snr.resistance && smcR.snr.resistance.dist < 0.8) { score += 10; signals.push(`貼近壓力(${smcR.snr.resistance.dist.toFixed(2)}%)`); direction -= 0.5; }
+          }
         }
       }
       if (score >= 25 && signals.length >= 2) {
@@ -1182,4 +1191,43 @@ export async function scanExplosive(coins, top = 200) {
     if (i + 8 < cands.length) await new Promise(r => setTimeout(r, 300));
   }
   return results.sort((a, b) => b.score - a.score).slice(0, 40);
+}
+
+// ═══════════ SNR 支撐壓力位 ═══════════════════════════════════════════════
+// 用 swing high/low 群聚成關鍵價位，回傳最近的支撐/壓力
+export function calcSNR(candles, lookback = 100) {
+  if (!candles || candles.length < 30) return null;
+  const slice = candles.slice(-lookback);
+  const { sh, sl } = findSwings(slice, 3);
+  const price = slice[slice.length - 1].c;
+
+  // 群聚相近價位（容差 0.5%）
+  function cluster(points) {
+    const sorted = points.map(p => p.price).sort((a, b) => a - b);
+    const groups = [];
+    sorted.forEach(p => {
+      const g = groups.find(g => Math.abs(g.avg - p) / p < 0.005);
+      if (g) { g.prices.push(p); g.avg = g.prices.reduce((a, b) => a + b, 0) / g.prices.length; g.count++; }
+      else groups.push({ avg: p, prices: [p], count: 1 });
+    });
+    return groups.sort((a, b) => b.count - a.count);
+  }
+
+  const resGroups = cluster(sh).filter(g => g.avg > price);
+  const supGroups = cluster(sl).filter(g => g.avg < price);
+
+  const nearestRes = resGroups.sort((a, b) => a.avg - b.avg)[0] || null;
+  const nearestSup = supGroups.sort((a, b) => b.avg - a.avg)[0] || null;
+
+  const resDist = nearestRes ? ((nearestRes.avg - price) / price) * 100 : null;
+  const supDist = nearestSup ? ((price - nearestSup.avg) / price) * 100 : null;
+
+  return {
+    price,
+    resistance: nearestRes ? { price: nearestRes.avg, dist: resDist, strength: nearestRes.count } : null,
+    support: nearestSup ? { price: nearestSup.avg, dist: supDist, strength: nearestSup.count } : null,
+    // 全部關鍵位（給圖表/列表用）
+    allResistances: resGroups.slice(0, 3).map(g => ({ price: g.avg, strength: g.count })),
+    allSupports: supGroups.slice(0, 3).map(g => ({ price: g.avg, strength: g.count })),
+  };
 }
