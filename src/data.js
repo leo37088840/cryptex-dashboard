@@ -1,1233 +1,1113 @@
-// ════════════════════════════════════════════════════════════════════════════
-// CRYPTEX data layer — 加密貨幣專業分析版
-// 現貨: Binance + OKX + CoinGecko  | 期貨: Binance fapi
-// 金十快訊
-// ════════════════════════════════════════════════════════════════════════════
+import { useState, useEffect, useMemo } from "react";
+import {
+  loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
+  calcSMA, calcMACD, calcRSI, calcKDJ,
+  loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges,
+  scanRecommendations, scanAnomalies, analyzeMultiAI, scanExplosive,
+} from "./data.js";
 
-export const PROXY_URL = import.meta.env.VITE_PROXY_URL || "";
-// 保留環境變數 export 以維持兼容（其他市場不再使用，但變數還在 Vercel）
-export const FINNHUB_KEY = import.meta.env.VITE_FINNHUB_KEY || "";
-export const TWELVEDATA_KEY = import.meta.env.VITE_TWELVEDATA_KEY || "";
-export const FINMIND_TOKEN = import.meta.env.VITE_FINMIND_TOKEN || "";
+const INTERVALS = ["15m", "1H", "4H", "1D"];
 
-async function jget(url, { useProxy = false } = {}) {
-  const targets = [];
-  if (useProxy && PROXY_URL) targets.push(`${PROXY_URL}/proxy?url=${encodeURIComponent(url)}`);
-  targets.push(url);
-  if (!useProxy && PROXY_URL) targets.push(`${PROXY_URL}/proxy?url=${encodeURIComponent(url)}`);
-  for (const t of targets) {
-    try {
-      const res = await fetch(t, { headers: { Accept: "application/json" } });
-      if (!res.ok) continue;
-      return await res.json();
-    } catch { /* next */ }
-  }
-  return null;
+function useIsMobile() {
+  const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth < 760 : false);
+  useEffect(() => {
+    const f = () => setM(window.innerWidth < 760);
+    window.addEventListener("resize", f); f();
+    return () => window.removeEventListener("resize", f);
+  }, []);
+  return m;
 }
 
-async function getText(url, { useProxy = false } = {}) {
-  const target = useProxy && PROXY_URL ? `${PROXY_URL}/proxy?url=${encodeURIComponent(url)}` : url;
+function Section({ title, color = "#58a6ff", badge, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="glass" style={{ borderRadius: 12, overflow: "hidden", marginBottom: 9 }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "transparent", border: "none", borderBottom: open ? "1px solid rgba(255,255,255,0.06)" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", cursor: "pointer" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, boxShadow: `0 0 8px ${color}` }} />
+          <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "'Sora',sans-serif", fontWeight: 700, letterSpacing: 0.5 }}>{title}</span>
+          {badge && <span className="mono" style={{ background: color + "22", color, fontSize: 9, padding: "1px 6px", borderRadius: 4 }}>{badge}</span>}
+        </div>
+        <span style={{ color: "#5a6b80", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && <div style={{ padding: 13 }}>{children}</div>}
+    </div>
+  );
+}
+function IndRow({ label, value, color }) {
+  return <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+    <span style={{ color: "#4a5568", fontSize: 10, fontFamily: "monospace" }}>{label}</span>
+    <span style={{ color: color || "#c9d1d9", fontSize: 10, fontFamily: "monospace", fontWeight: 600 }}>{value ?? "—"}</span>
+  </div>;
+}
+function FeedState({ state, empty, children }) {
+  if (state === undefined) return <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "10px 4px", textAlign: "center" }}>連線中...</div>;
+  if (state === null) return <div style={{ color: "#5a4020", fontSize: 10, lineHeight: 1.6, padding: "8px", background: "#1a1206", borderRadius: 6 }}>⚠️ 來源暫時無法連線，稍後自動恢復。</div>;
+  if (Array.isArray(state) && state.length === 0) return <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>{empty || "目前無資料"}</div>;
+  return children;
+}
+function fmtFeedTime(t) {
+  if (!t) return "";
+  let d;
+  if (typeof t === "number") d = new Date(t < 1e12 ? t * 1000 : t);
+  else d = new Date(t);
+  if (isNaN(d.getTime())) return String(t).slice(0, 16);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+const SearchInput = ({ value, onChange }) => (
+  <input
+    value={value}
+    onChange={(e) => onChange(e.target.value)}
+    placeholder="搜尋..."
+    style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "6px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }}
+  />
+);
+
+// AI 卡片
+function AICard({ ai, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (!ai) return null;
+  return (
+    <div style={{ border: `1px solid ${ai.color}55`, background: `${ai.color}0a`, borderRadius: 8, marginBottom: 6, overflow: "hidden" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "transparent", border: "none", padding: "8px 10px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+        <span style={{ fontSize: 16 }}>{ai.emoji}</span>
+        <div style={{ flex: 1, textAlign: "left" }}>
+          <div style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ai.name}</div>
+          <div style={{ color: ai.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{ai.direction} · {ai.confidence}%</div>
+        </div>
+        <div style={{ width: 60, height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden", marginRight: 6 }}>
+          <div style={{ width: `${ai.confidence}%`, height: "100%", background: ai.color }} />
+        </div>
+        <span style={{ color: "#4a5568", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && <div style={{ padding: "0 10px 10px", borderTop: "1px solid #1a2535" }}>
+        {ai.reasons.map((r, i) => (
+          <div key={i} style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.6, padding: "2px 0" }}>· {r}</div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+
+// ═══════════ 評分卡（綜合多空評分） ═══════════════════════════════════════
+function ScoreBadge({ label, value, color }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 6 }}>
+      <span style={{ color: "#8b949e", fontSize: 11, fontFamily: "monospace" }}>{label}</span>
+      <span style={{ background: `${color}22`, color, fontSize: 10, fontFamily: "monospace", fontWeight: 700, padding: "2px 8px", borderRadius: 5, border: `1px solid ${color}55` }}>{value}</span>
+    </div>
+  );
+}
+
+function ScoreCard({ symbol, smc, multiAI }) {
+  if (!smc) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>分析中...</div>;
+
+  const consensus = multiAI && multiAI.length > 0 ? multiAI[multiAI.length - 1] : null;
+  const futuresAI = multiAI && multiAI.length > 0 ? multiAI[3] : null; // 期貨情緒派
+
+  // 市場動能：來自 SMC 結構
+  const momentumLabel = smc.structure.includes("上升") ? "買方主導" : smc.structure.includes("下降") ? "賣方主導" : "盤整";
+  const momentumColor = smc.structure.includes("上升") ? "#26a69a" : smc.structure.includes("下降") ? "#ef5350" : "#f0b90b";
+
+  // 資金費率（從期貨情緒派理由中找）
+  let fundingLabel = "中性", fundingColor = "#f0b90b", fundingDesc = "暫無資料";
+  if (futuresAI) {
+    const fr = futuresAI.reasons.find(r => r.includes("資金費率"));
+    if (fr) {
+      fundingDesc = fr;
+      if (fr.includes("多頭擁擠")) { fundingLabel = "偏空"; fundingColor = "#ef5350"; }
+      else if (fr.includes("空頭擁擠")) { fundingLabel = "偏多"; fundingColor = "#26a69a"; }
+    }
+  }
+
+  // 散戶情緒
+  let sentimentLabel = "中性", sentimentColor = "#f0b90b", sentimentDesc = "暫無資料";
+  if (futuresAI) {
+    const sr = futuresAI.reasons.find(r => r.includes("散戶") || r.includes("大戶"));
+    if (sr) {
+      sentimentDesc = sr;
+      if (sr.includes("反指標利多") || sr.includes("大戶看多")) { sentimentLabel = "偏多"; sentimentColor = "#26a69a"; }
+      else if (sr.includes("反指標利空") || sr.includes("大戶看空")) { sentimentLabel = "偏空"; sentimentColor = "#ef5350"; }
+    }
+  }
+
+  // 相對強弱（vs BTC）
+  let rsLabel = "同步", rsColor = "#f0b90b", rsDesc = "暫無資料";
+  const aiDeep = consensus; // 整合派理由可能含 vs BTC，但目前 multiAI 沒有；用 smc reasons fallback
+  const rsReason = (smc.reasons || []).find(r => r.includes("vs BTC") || r.includes("強勢") || r.includes("弱勢"));
+  if (rsReason) {
+    rsDesc = rsReason;
+    if (rsReason.includes("強勢")) { rsLabel = "強於BTC"; rsColor = "#26a69a"; }
+    else if (rsReason.includes("弱勢")) { rsLabel = "弱於BTC"; rsColor = "#ef5350"; }
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ background: `${smc.color}14`, border: `1.5px solid ${smc.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
+        <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>📊 綜合評分卡 · {symbol}</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: smc.color, fontFamily: "monospace" }}>{smc.signal}</div>
+        <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>信心度 {smc.confidence}%</div>
+      </div>
+
+      <Section title="做多/做空依據" color={smc.color} defaultOpen={true}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div>
+            <ScoreBadge label="市場動能" value={momentumLabel} color={momentumColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{smc.structure}</div>
+          </div>
+          <div>
+            <ScoreBadge label="資金費率" value={fundingLabel} color={fundingColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{fundingDesc}</div>
+          </div>
+          <div>
+            <ScoreBadge label="散戶/大戶情緒" value={sentimentLabel} color={sentimentColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{sentimentDesc}</div>
+          </div>
+          <div>
+            <ScoreBadge label="相對強弱" value={rsLabel} color={rsColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{rsDesc}</div>
+          </div>
+          {smc.snr && (smc.snr.support || smc.snr.resistance) && (
+            <div>
+              <ScoreBadge label="關鍵價位 SNR" value={
+                smc.snr.support && smc.snr.support.dist < 1 ? "近支撐"
+                : smc.snr.resistance && smc.snr.resistance.dist < 1 ? "近壓力"
+                : "區間中"
+              } color={
+                smc.snr.support && smc.snr.support.dist < 1 ? "#26a69a"
+                : smc.snr.resistance && smc.snr.resistance.dist < 1 ? "#ef5350"
+                : "#f0b90b"
+              } />
+              <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>
+                {smc.snr.resistance ? `壓力 ${smc.snr.resistance.price.toFixed(smc.snr.resistance.price > 1 ? 4 : 6)} (+${smc.snr.resistance.dist.toFixed(2)}%)` : "—"}
+                {" · "}
+                {smc.snr.support ? `支撐 ${smc.snr.support.price.toFixed(smc.snr.support.price > 1 ? 4 : 6)} (-${smc.snr.support.dist.toFixed(2)}%)` : "—"}
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      <Section title="評分依據" color="#a78bfa" defaultOpen={false}>
+        {smc.reasons.length ? smc.reasons.map((r, i) => (
+          <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}>
+            <span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}
+          </div>
+        )) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號。</div>}
+        {consensus && (
+          <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0", borderTop: "1px solid #1a2535", marginTop: 6, paddingTop: 8 }}>
+            <span style={{ color: "#a78bfa" }}>🧠 AI 共識：</span>{consensus.direction} ({consensus.confidence}%)
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+// ═══════════ 交易紀錄卡 ═══════════════════════════════════════════════════
+const TRADES_KEY = "cryptex_trades_v1";
+
+function loadTrades() {
   try {
-    const res = await fetch(target);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch { return null; }
+    const raw = localStorage.getItem(TRADES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+function saveTrades(trades) {
+  try { localStorage.setItem(TRADES_KEY, JSON.stringify(trades)); } catch {}
 }
 
-// ═══════════ 永續合約列表 (Binance Futures + OKX SWAP + CoinGecko 補中文名) ═══
-export async function loadCrypto() {
-  const merged = new Map();
-  const add = (c) => {
-    if (!c || !(c.price > 0)) return;
-    const ex = merged.get(c.name);
-    if (!ex || (c.volume || 0) > (ex.volume || 0)) merged.set(c.name, c);
-  };
-  const [binance, okx, gecko] = await Promise.all([
-    jget("https://fapi.binance.com/fapi/v1/ticker/24hr"),
-    jget("https://www.okx.com/api/v5/market/tickers?instType=SWAP"),
-    jget("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=500&page=1"),
-  ]);
-  // 先用 CoinGecko 建立中文名對照表
-  const labelMap = new Map();
-  if (Array.isArray(gecko)) {
-    gecko.forEach((c) => labelMap.set(c.symbol.toUpperCase(), c.name));
+function TradeForm({ onAdd, onCancel, defaultSymbol }) {
+  const [symbol, setSymbol] = useState(defaultSymbol || "");
+  const [direction, setDirection] = useState("long");
+  const [entry, setEntry] = useState("");
+  const [sl, setSl] = useState("");
+  const [tp1, setTp1] = useState("");
+  const [tp2, setTp2] = useState("");
+  const [tp3, setTp3] = useState("");
+
+  const inputStyle = { width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "7px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" };
+  const labelStyle = { color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginBottom: 3, display: "block" };
+
+  function submit() {
+    const e = parseFloat(entry), s = parseFloat(sl);
+    if (!symbol || !e || !s) return;
+    const trade = {
+      id: Date.now(),
+      symbol: symbol.toUpperCase(),
+      direction,
+      entry: e,
+      sl: s,
+      tp1: parseFloat(tp1) || null,
+      tp2: parseFloat(tp2) || null,
+      tp3: parseFloat(tp3) || null,
+      ts: Date.now(),
+      status: "open",
+    };
+    onAdd(trade);
   }
-  if (Array.isArray(binance)) {
-    binance.filter((t) => t.symbol.endsWith("USDT") && !t.symbol.includes("_"))
-      .forEach((t) => {
-        const name = t.symbol.replace("USDT", "");
-        add({
-          symbol: t.symbol.replace("USDT", "-USDT"),
-          binanceSymbol: t.symbol,
-          name,
-          label: labelMap.get(name),
-          cat: "crypto",
-          price: parseFloat(t.lastPrice) || 0,
-          change: parseFloat(t.priceChangePercent) || 0,
-          volume: parseFloat(t.quoteVolume) || 0,
-        });
-      });
+
+  return (
+    <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>幣種</label>
+          <input style={inputStyle} value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="例: BTC-USDT" />
+        </div>
+        <div style={{ width: 90 }}>
+          <label style={labelStyle}>方向</label>
+          <select style={inputStyle} value={direction} onChange={(e) => setDirection(e.target.value)}>
+            <option value="long">做多</option>
+            <option value="short">做空</option>
+          </select>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>進場價</label>
+          <input style={inputStyle} value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="0.00" inputMode="decimal" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>SL 止損</label>
+          <input style={inputStyle} value={sl} onChange={(e) => setSl(e.target.value)} placeholder="0.00" inputMode="decimal" />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>TP1</label>
+          <input style={inputStyle} value={tp1} onChange={(e) => setTp1(e.target.value)} placeholder="選填" inputMode="decimal" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>TP2</label>
+          <input style={inputStyle} value={tp2} onChange={(e) => setTp2(e.target.value)} placeholder="選填" inputMode="decimal" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>TP3</label>
+          <input style={inputStyle} value={tp3} onChange={(e) => setTp3(e.target.value)} placeholder="選填" inputMode="decimal" />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={submit} style={{ flex: 1, background: "#26a69a", border: "none", borderRadius: 6, color: "#fff", padding: "8px 0", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>新增紀錄</button>
+        <button onClick={onCancel} style={{ flex: 1, background: "#1a2535", border: "none", borderRadius: 6, color: "#8b949e", padding: "8px 0", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>取消</button>
+      </div>
+    </div>
+  );
+}
+
+function TradeCard({ trade, livePrice, onDelete, onClose }) {
+  const isLong = trade.direction === "long";
+  const dirColor = isLong ? "#26a69a" : "#ef5350";
+  const dirLabel = isLong ? "做多" : "做空";
+
+  let pnlPct = null;
+  if (livePrice && trade.entry) {
+    pnlPct = isLong ? ((livePrice - trade.entry) / trade.entry) * 100 : ((trade.entry - livePrice) / trade.entry) * 100;
   }
-  if (okx?.data?.length) {
-    okx.data.filter((t) => t.instId.endsWith("-USDT-SWAP")).forEach((t) => {
-      const name = t.instId.replace("-USDT-SWAP", "");
-      add({
-        symbol: `${name}-USDT`,
-        okxSymbol: t.instId,
-        name,
-        label: labelMap.get(name),
-        cat: "crypto",
-        price: parseFloat(t.last) || 0,
-        change: t.open24h ? ((parseFloat(t.last) - parseFloat(t.open24h)) / parseFloat(t.open24h)) * 100 : 0,
-        volume: parseFloat(t.volCcy24h) || 0,
-      });
+
+  // 判斷 TP 達成狀態
+  function tpHit(tp) {
+    if (!tp || !livePrice) return false;
+    return isLong ? livePrice >= tp : livePrice <= tp;
+  }
+  function slHit() {
+    if (!livePrice) return false;
+    return isLong ? livePrice <= trade.sl : livePrice >= trade.sl;
+  }
+
+  const fmt = (v) => v == null ? "—" : (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+
+  const tps = [
+    ["TP1", trade.tp1],
+    ["TP2", trade.tp2],
+    ["TP3", trade.tp3],
+  ].filter(([, v]) => v != null);
+
+  let statusBadge = null;
+  if (trade.status === "closed") statusBadge = { label: "已平倉", color: "#5a6b80" };
+  else if (slHit()) statusBadge = { label: "觸及SL", color: "#ef5350" };
+  else {
+    const hitTps = tps.filter(([, v]) => tpHit(v));
+    if (hitTps.length > 0) statusBadge = { label: `${hitTps[hitTps.length - 1][0]} 達成`, color: "#26a69a" };
+  }
+
+  return (
+    <div style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{trade.symbol}</span>
+        <span style={{ color: dirColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700, background: `${dirColor}1a`, padding: "1px 6px", borderRadius: 4 }}>{dirLabel}</span>
+        {statusBadge && <span style={{ color: statusBadge.color, fontSize: 9, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${statusBadge.color}`, padding: "1px 6px", borderRadius: 4 }}>{statusBadge.label}</span>}
+        <span style={{ marginLeft: "auto", color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{new Date(trade.ts).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+      </div>
+
+      {pnlPct != null && (
+        <div style={{ textAlign: "center", padding: "6px 0", marginBottom: 6, background: pnlPct >= 0 ? "#26a69a14" : "#ef535014", borderRadius: 6 }}>
+          <span className="mono" style={{ color: pnlPct >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
+          <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginLeft: 6 }}>未實現盈虧 · 現價 {fmt(livePrice)}</span>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10, fontFamily: "monospace" }}>
+        <div style={{ background: "#0a1218", borderRadius: 5, padding: "5px 8px" }}>
+          <div style={{ color: "#5a6b80", fontSize: 9 }}>進場價</div>
+          <div style={{ color: "#c9d1d9", fontWeight: 700 }}>{fmt(trade.entry)}</div>
+        </div>
+        <div style={{ background: slHit() ? "#ef535022" : "#0a1218", borderRadius: 5, padding: "5px 8px", border: slHit() ? "1px solid #ef5350" : "none" }}>
+          <div style={{ color: "#ef5350", fontSize: 9 }}>SL</div>
+          <div style={{ color: "#ef5350", fontWeight: 700 }}>{fmt(trade.sl)}</div>
+        </div>
+        {tps.map(([label, val]) => (
+          <div key={label} style={{ background: tpHit(val) ? "#26a69a22" : "#0a1218", borderRadius: 5, padding: "5px 8px", border: tpHit(val) ? "1px solid #26a69a" : "none" }}>
+            <div style={{ color: "#26a69a", fontSize: 9 }}>{label} {tpHit(val) ? "✓" : ""}</div>
+            <div style={{ color: "#26a69a", fontWeight: 700 }}>{fmt(val)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        {trade.status !== "closed" && (
+          <button onClick={() => onClose(trade.id)} style={{ flex: 1, background: "#1a2535", border: "none", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>標記平倉</button>
+        )}
+        <button onClick={() => onDelete(trade.id)} style={{ flex: 1, background: "#1a2535", border: "none", borderRadius: 5, color: "#ef5350", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>刪除</button>
+      </div>
+    </div>
+  );
+}
+
+function TradeJournal({ coins, defaultSymbol }) {
+  const [trades, setTrades] = useState(() => loadTrades());
+  const [showForm, setShowForm] = useState(false);
+  const [livePrices, setLivePrices] = useState({});
+
+  useEffect(() => { saveTrades(trades); }, [trades]);
+
+  // 抓開倉中交易的即時價格（用 coins 列表的價格，每次 coins 更新時刷新）
+  useEffect(() => {
+    if (!coins || !coins.length) return;
+    const map = {};
+    trades.forEach((t) => {
+      if (t.status === "closed") return;
+      const c = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""));
+      if (c) map[t.symbol] = c.price;
     });
+    setLivePrices((prev) => ({ ...prev, ...map }));
+  }, [coins, trades]);
+
+  function addTrade(trade) {
+    setTrades((prev) => [trade, ...prev]);
+    setShowForm(false);
   }
-  return Array.from(merged.values()).sort((a, b) => (b.volume || 0) - (a.volume || 0));
+  function deleteTrade(id) {
+    setTrades((prev) => prev.filter((t) => t.id !== id));
+  }
+  function closeTrade(id) {
+    setTrades((prev) => prev.map((t) => t.id === id ? { ...t, status: "closed" } : t));
+  }
+
+  const openTrades = trades.filter((t) => t.status !== "closed");
+  const closedTrades = trades.filter((t) => t.status === "closed");
+
+  return (
+    <>
+      <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>交易紀錄</div>
+          <div style={{ color: "#4a5568", fontSize: 9 }}>本機儲存 · 自動追蹤TP/SL進度</div>
+        </div>
+        <button onClick={() => setShowForm((s) => !s)} style={{ background: "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{showForm ? "收起" : "+ 新增"}</button>
+      </div>
+
+      {showForm && <TradeForm onAdd={addTrade} onCancel={() => setShowForm(false)} defaultSymbol={defaultSymbol} />}
+
+      <Section title={`持倉中 (${openTrades.length})`} color="#58a6ff" defaultOpen={true}>
+        {openTrades.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>尚無持倉紀錄</div>}
+        {openTrades.map((t) => (
+          <TradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onDelete={deleteTrade} onClose={closeTrade} />
+        ))}
+      </Section>
+
+      {closedTrades.length > 0 && (
+        <Section title={`已平倉 (${closedTrades.length})`} color="#5a6b80" defaultOpen={false}>
+          {closedTrades.map((t) => (
+            <TradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onDelete={deleteTrade} onClose={closeTrade} />
+          ))}
+        </Section>
+      )}
+    </>
+  );
 }
 
-// 移除多市場 universe，只保留 crypto。loadMarket 兼容介面。
-export const UNIVERSE = { crypto: [] };
-export async function loadMarket() { return loadCrypto(); }
+export default function App() {
+  const isMobile = useIsMobile();
+  const [coins, setCoins] = useState([]);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [tf, setTf] = useState("1H");
+  const [candles, setCandles] = useState([]);
+  const [sideTab, setSideTab] = useState("smc");
+  const [smc, setSmc] = useState(null);
+  const [smcMulti, setSmcMulti] = useState([]);
+  const [notif, setNotif] = useState(null);
+  const [notifOn, setNotifOn] = useState(false);
+  const [status, setStatus] = useState("載入中...");
+  const [j10flash, setJ10flash] = useState(undefined);
+  const [periodChg, setPeriodChg] = useState(null);
+  const [recs, setRecs] = useState(null);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsTs, setRecsTs] = useState(0);
+  const [alerts, setAlerts] = useState([]);
+  const [listLimit, setListLimit] = useState(50);
+  const [multiAI, setMultiAI] = useState(null);
+  const [multiAILoading, setMultiAILoading] = useState(false);
+  const [alertSubTab, setAlertSubTab] = useState("alerts");
+  const [explosive, setExplosive] = useState(null);
+  const [explosiveLoading, setExplosiveLoading] = useState(false);
+  const [explosiveTs, setExplosiveTs] = useState(0);
 
-// ═══════════ K 線 ═══════════════════════════════════════════════════════════
-const BINANCE_TF = { "15m":"15m", "1H":"1h", "4H":"4h", "1D":"1d" };
+  const lastSig = { current: null }; // 暫不用 useRef 簡化
 
-async function klinesBinance(item, tf) {
-  const sym = item.binanceSymbol || `${item.name}USDT`;
-  const interval = BINANCE_TF[tf] || "15m";
-  // 永續合約 K 線
-  const b = await jget(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${interval}&limit=500`);
-  if (!Array.isArray(b) || !b.length) return null;
-  return b.map((k) => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
-}
+  const filtered = useMemo(() => {
+    if (!search) return coins;
+    const q = search.toUpperCase();
+    return coins.filter((c) => c.name.toUpperCase().includes(q) || (c.symbol || "").toUpperCase().includes(q) || (c.label || "").toUpperCase().includes(q));
+  }, [search, coins]);
+  const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
-export async function loadKlines(item, tf) {
-  if (!item) return null;
-  return klinesBinance(item, tf);
-}
-
-// 多週期漲跌
-export async function loadPeriodChanges(item) {
-  if (!item) return null;
-  const k = await loadKlines(item, "1D");
-  if (!k || k.length < 2) return null;
-  const last = k[k.length - 1].c;
-  const chg = (daysAgo) => {
-    const idx = k.length - 1 - daysAgo;
-    if (idx < 0) return null;
-    const base = k[idx].c;
-    return base ? ((last - base) / base) * 100 : null;
-  };
-  return { today: chg(1), d7: chg(7), d30: chg(30), d90: chg(90), d180: chg(180), y1: chg(365) };
-}
-
-// ═══════════ WebSocket (Binance Futures) ═══════════════════════════════════
-export function subscribeCryptoTicker(binanceSymbol, onTick) {
-  if (!binanceSymbol) return () => {};
-  const sym = binanceSymbol.toLowerCase();
-  let ws = null, closed = false, retry = 0;
-  const connect = () => {
-    if (closed) return;
-    try {
-      // 永續合約 trade stream
-      ws = new WebSocket(`wss://fstream.binance.com/ws/${sym}@trade`);
-      ws.onmessage = (ev) => {
-        try {
-          const d = JSON.parse(ev.data);
-          if (d.p) onTick(parseFloat(d.p), binanceSymbol);
-        } catch {}
-      };
-      ws.onclose = () => {
-        if (closed) return;
-        retry = Math.min(retry + 1, 5);
-        setTimeout(connect, retry * 1000);
-      };
-      ws.onerror = () => { try { ws.close(); } catch {} };
-    } catch {}
-  };
-  connect();
-  return () => { closed = true; try { ws && ws.close(); } catch {} };
-}
-
-// 訂閱即時 K 線（每秒推送當前未收盤 K 棒）— 取代 15 秒輪詢
-export function subscribeCryptoKline(binanceSymbol, tf, onCandle) {
-  if (!binanceSymbol) return () => {};
-  const sym = binanceSymbol.toLowerCase();
-  const tfMap = { "15m": "15m", "1H": "1h", "4H": "4h", "1D": "1d" };
-  const intv = tfMap[tf] || "15m";
-  let ws = null, closed = false, retry = 0;
-  const connect = () => {
-    if (closed) return;
-    try {
-      ws = new WebSocket(`wss://fstream.binance.com/ws/${sym}@kline_${intv}`);
-      ws.onmessage = (ev) => {
-        try {
-          const d = JSON.parse(ev.data);
-          const k = d.k;
-          if (!k) return;
-          onCandle({
-            t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v,
-            isClosed: !!k.x,
-          });
-        } catch {}
-      };
-      ws.onclose = () => {
-        if (closed) return;
-        retry = Math.min(retry + 1, 5);
-        setTimeout(connect, retry * 1000);
-      };
-      ws.onerror = () => { try { ws.close(); } catch {} };
-    } catch {}
-  };
-  connect();
-  return () => { closed = true; try { ws && ws.close(); } catch {} };
-}
-
-// ═══════════ INDICATORS ═════════════════════════════════════════════════════
-export function calcSMA(d, p) {
-  return d.map((_, i) => (i < p - 1 ? null : d.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p));
-}
-export function calcEMA(d, p) { const k = 2/(p+1), e=[]; d.forEach((v,i)=>e.push(i===0?v:v*k+e[i-1]*(1-k))); return e; }
-export function calcMACD(c) {
-  const e12 = calcEMA(c, 12), e26 = calcEMA(c, 26);
-  const macd = e12.map((v, i) => v - e26[i]);
-  const signal = [...Array(26).fill(null), ...calcEMA(macd.slice(26), 9)];
-  const hist = macd.map((v, i) => (signal[i] != null ? v - signal[i] : null));
-  return { macd, signal, hist };
-}
-export function calcRSI(c, p = 14) {
-  return c.map((_, i) => {
-    if (i < p) return null;
-    let g = 0, l = 0;
-    for (let j = i - p + 1; j <= i; j++) { const x = c[j] - c[j - 1]; if (x > 0) g += x; else l -= x; }
-    return 100 - 100 / (1 + g / (l || 1e-9));
-  });
-}
-export function calcKDJ(h, lo, c, p = 9) {
-  let pk = 50, pd = 50;
-  return c.map((_, i) => {
-    if (i < p - 1) return { k: null, d: null, j: null };
-    const hh = Math.max(...h.slice(i - p + 1, i + 1)), ll = Math.min(...lo.slice(i - p + 1, i + 1));
-    const rsv = hh === ll ? 50 : ((c[i] - ll) / (hh - ll)) * 100;
-    const k = (pk * 2) / 3 + rsv / 3, d = (pd * 2) / 3 + k / 3;
-    pk = k; pd = d;
-    return { k, d, j: 3 * k - 2 * d };
-  });
-}
-export function calcATR(h, l, c, p = 14) {
-  const tr = h.map((_, i) => i === 0 ? h[i] - l[i] : Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
-  return calcSMA(tr, p);
-}
-export function calcADX(h, l, c, p = 14) {
-  const tr = h.map((_, i) => i === 0 ? h[i] - l[i] : Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
-  const plusDM = h.map((_, i) => i === 0 ? 0 : Math.max(h[i] - h[i - 1], 0));
-  const minusDM = l.map((_, i) => i === 0 ? 0 : Math.max(l[i - 1] - l[i], 0));
-  const atr = calcSMA(tr, p), plus = calcSMA(plusDM, p), minus = calcSMA(minusDM, p);
-  return c.map((_, i) => {
-    if (i < p - 1 || !atr[i]) return null;
-    const pdi = (plus[i] / atr[i]) * 100, mdi = (minus[i] / atr[i]) * 100;
-    const dx = Math.abs(pdi - mdi) / Math.max(pdi + mdi, 1e-9) * 100;
-    return dx;
-  });
-}
-
-// ═══════════ SMC ENGINE ═════════════════════════════════════════════════════
-function findSwings(c, lb = 3) {
-  const sh = [], sl = [];
-  for (let i = lb; i < c.length - lb; i++) {
-    let hi = true, lo = true;
-    for (let j = 1; j <= lb; j++) {
-      if (c[i].h <= c[i - j].h || c[i].h <= c[i + j].h) hi = false;
-      if (c[i].l >= c[i - j].l || c[i].l >= c[i + j].l) lo = false;
+  // 載入加密貨幣列表
+  useEffect(() => {
+    let cancel = false;
+    async function run() {
+      const list = await loadMarket("crypto");
+      if (cancel) return;
+      setCoins(list);
+      setStatus(list.length > 0 ? `${list.length} 商品 · 即時` : `來源連線中`);
+      setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
     }
-    if (hi) sh.push({ i, price: c[i].h });
-    if (lo) sl.push({ i, price: c[i].l });
-  }
-  return { sh, sl };
-}
+    run();
+    if (search) return () => { cancel = true; };
+    const iv = setInterval(run, 30000);
+    return () => { cancel = true; clearInterval(iv); };
+  }, [search]);
 
-export function analyzeSMC(candles) {
-  if (!candles || candles.length < 40) return null;
-  const { sh, sl } = findSwings(candles, 3);
-  const last = candles.length - 1, price = candles[last].c, reasons = [];
-  let bias = 0, structure = "盤整";
-  const rh = sh.slice(-3), rl = sl.slice(-3);
-  if (rh.length >= 2 && rl.length >= 2) {
-    const hh = rh[rh.length - 1].price > rh[rh.length - 2].price;
-    const hl = rl[rl.length - 1].price > rl[rl.length - 2].price;
-    const lh = rh[rh.length - 1].price < rh[rh.length - 2].price;
-    const ll = rl[rl.length - 1].price < rl[rl.length - 2].price;
-    if (hh && hl) { structure = "上升結構 (HH+HL)"; bias += 2; reasons.push("市場結構上升 (更高高點+更高低點)，多頭 BOS"); }
-    else if (lh && ll) { structure = "下降結構 (LH+LL)"; bias -= 2; reasons.push("市場結構下降 (更低高點+更低低點)，空頭 BOS"); }
-    else if (hh && ll) { structure = "結構轉折 CHoCH"; reasons.push("出現結構轉折 (CHoCH)，方向待確認"); }
-  }
-  const last5 = candles.slice(-6, -1);
-  const ph = Math.max(...last5.map((c) => c.h)), pl = Math.min(...last5.map((c) => c.l)), lc = candles[last];
-  let sweep = null;
-  if (lc.h > ph && lc.c < ph) { sweep = "上方流動性掃單"; bias -= 1.5; reasons.push("掃過前高後收回 (賣方流動性獵取)，偏空"); }
-  if (lc.l < pl && lc.c > pl) { sweep = "下方流動性掃單"; bias += 1.5; reasons.push("掃過前低後收回 (買方流動性獵取)，偏多"); }
-  let fvg = null;
-  for (let i = last - 1; i >= Math.max(0, last - 10); i--) {
-    if (candles[i + 1] && candles[i - 1]) {
-      if (candles[i - 1].h < candles[i + 1].l) { fvg = { type: "bull", top: candles[i + 1].l, bot: candles[i - 1].h }; break; }
-      if (candles[i - 1].l > candles[i + 1].h) { fvg = { type: "bear", top: candles[i - 1].l, bot: candles[i + 1].h }; break; }
-    }
-  }
-  if (fvg) {
-    if (fvg.type === "bull" && price >= fvg.bot && price <= fvg.top * 1.005) { bias += 1; reasons.push("回踩多頭 FVG 失衡區，潛在支撐"); }
-    if (fvg.type === "bear" && price <= fvg.top && price >= fvg.bot * 0.995) { bias -= 1; reasons.push("回踩空頭 FVG 失衡區，潛在壓力"); }
-  }
-  let ob = null;
-  for (let i = last - 2; i >= Math.max(0, last - 15); i--) {
-    const mv = (candles[i + 1].c - candles[i + 1].o) / candles[i + 1].o;
-    if (candles[i].c < candles[i].o && mv > 0.012) { ob = { type: "bull", top: candles[i].h, bot: candles[i].l }; break; }
-    if (candles[i].c > candles[i].o && mv < -0.012) { ob = { type: "bear", top: candles[i].h, bot: candles[i].l }; break; }
-  }
-  if (ob) {
-    if (ob.type === "bull" && price >= ob.bot && price <= ob.top * 1.003) { bias += 1; reasons.push("進入多頭訂單塊 (機構買單區)"); }
-    if (ob.type === "bear" && price <= ob.top && price >= ob.bot * 0.997) { bias -= 1; reasons.push("進入空頭訂單塊 (機構賣單區)"); }
-  }
-  const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l);
-  const { hist } = calcMACD(closes), rsi = calcRSI(closes), kdj = calcKDJ(highs, lows, closes);
-  const h = hist[last], r = rsi[last], k = kdj[last]?.k, d = kdj[last]?.d;
-  let confirms = 0;
-  if (h != null) confirms += h > 0 ? 1 : -1;
-  if (r != null) confirms += r > 55 ? 1 : r < 45 ? -1 : 0;
-  if (k != null && d != null) confirms += k > d ? 1 : -1;
-  const snr = calcSNR(candles);
-  if (snr) {
-    if (snr.support && snr.support.dist < 1) { bias += 0.5; reasons.push(`價格貼近支撐 ${snr.support.price.toFixed(4)} (強度${snr.support.strength})`); }
-    if (snr.resistance && snr.resistance.dist < 1) { bias -= 0.5; reasons.push(`價格貼近壓力 ${snr.resistance.price.toFixed(4)} (強度${snr.resistance.strength})`); }
-  }
-  const score = bias + confirms * 0.5;
-  let signal = "觀望", color = "#787b86";
-  if (score >= 2.5) { signal = "強力做多"; color = "#26a69a"; }
-  else if (score >= 1) { signal = "做多"; color = "#26a69a"; }
-  else if (score <= -2.5) { signal = "強力做空"; color = "#ef5350"; }
-  else if (score <= -1) { signal = "做空"; color = "#ef5350"; }
-  const confidence = Math.min(99, Math.round((Math.abs(score) / 5) * 100));
-  return {
-    signal, color, score, confidence, structure, sweep, fvg, ob, reasons, price, snr,
-    confirm: {
-      macd: h == null ? "—" : h > 0 ? "多頭" : "空頭",
-      rsi: r == null ? "—" : r > 55 ? "偏多" : r < 45 ? "偏空" : "中性",
-      kdj: k != null && d != null ? (k > d ? "金叉" : "死叉") : "—",
-    },
-  };
-}
+  // 金十快訊
+  useEffect(() => {
+    let cancel = false;
+    async function run() { const r = await loadJin10Flash(); if (!cancel) setJ10flash(r); }
+    run(); const iv = setInterval(run, 60000);
+    return () => { cancel = true; clearInterval(iv); };
+  }, []);
 
-export async function analyzeSMCMulti(item) {
-  const tfs = ["15m", "1H", "4H", "1D"];
-  const results = await Promise.all(tfs.map(async (tf) => {
-    const k = await loadKlines(item, tf);
-    return { tf, result: k && k.length >= 40 ? analyzeSMC(k) : null };
-  }));
-  return results;
-}
+  // 載入 K 線（後台用，給指標/SMC/AI 計算，UI 不畫圖）
+  useEffect(() => {
+    if (!selected) return;
+    let cancel = false;
+    setCandles([]);
+    loadKlines(selected, tf).then((k) => { if (!cancel && k && k.length) setCandles(k); });
+    const iv = setInterval(() => {
+      loadKlines(selected, tf).then((k) => {
+        if (cancel || !k || !k.length) return;
+        setCandles((prev) => (prev.length && k[k.length - 1].t === prev[prev.length - 1].t ? prev : k));
+      });
+    }, 60000);
+    return () => { cancel = true; clearInterval(iv); };
+  }, [selected, tf]);
 
-// ═══════════ 回測引擎 ═══════════════════════════════════════════════════════
-// 對歷史 K 線跑 SMC 策略，模擬每個訊號的交易結果，產出績效報告
-// opts: { atrMult: 止損 ATR 倍數, targetMult: 目標 ATR 倍數, maxBars: 最多持有 K 棒數 }
-export function backtest(candles, opts = {}) {
-  const { atrMult = 1.5, targetMult = 2, maxBars = 30, lookback = 50 } = opts;
-  if (!candles || candles.length < lookback + 20) return null;
-
-  const highs = candles.map((c) => c.h);
-  const lows = candles.map((c) => c.l);
-  const closes = candles.map((c) => c.c);
-  const atrs = calcATR(highs, lows, closes);
-
-  const trades = [];
-  let open = null;
-
-  for (let i = lookback; i < candles.length; i++) {
-    const cdl = candles[i];
-
-    // 檢查當前未結束的交易
-    if (open) {
-      let exited = false;
-      if (open.isLong) {
-        if (cdl.l <= open.stop) {
-          open.exit = open.stop; open.exitReason = "止損";
-          open.pnl = ((open.stop - open.entry) / open.entry) * 100;
-          exited = true;
-        } else if (cdl.h >= open.target) {
-          open.exit = open.target; open.exitReason = "目標達成";
-          open.pnl = ((open.target - open.entry) / open.entry) * 100;
-          exited = true;
+  // SMC（只在新 K 棒時重算）
+  const lastCandleT = candles.length > 0 ? candles[candles.length - 1].t : 0;
+  useEffect(() => {
+    if (candles.length < 40 || !selected) { setSmc(null); return; }
+    const r = analyzeSMC(candles); setSmc(r);
+    if (r) {
+      const isDir = r.signal.includes("做多") || r.signal.includes("做空");
+      const key = `${selected.symbol}-${r.signal}`;
+      if (isDir && lastSig.current !== key) {
+        lastSig.current = key;
+        const p = { signal: r.signal, color: r.color, symbol: selected.symbol, ts: Date.now(), confidence: r.confidence };
+        setNotif(p);
+        if (notifOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try { new Notification(`📊 ${selected.symbol} SMC 訊號`, { body: `${r.signal}｜信心 ${r.confidence}%` }); } catch {}
         }
-      } else {
-        if (cdl.h >= open.stop) {
-          open.exit = open.stop; open.exitReason = "止損";
-          open.pnl = ((open.entry - open.stop) / open.entry) * 100;
-          exited = true;
-        } else if (cdl.l <= open.target) {
-          open.exit = open.target; open.exitReason = "目標達成";
-          open.pnl = ((open.entry - open.target) / open.entry) * 100;
-          exited = true;
-        }
-      }
-      if (!exited && i - open.entryIdx >= maxBars) {
-        open.exit = cdl.c; open.exitReason = "時間止損";
-        open.pnl = open.isLong
-          ? ((cdl.c - open.entry) / open.entry) * 100
-          : ((open.entry - cdl.c) / open.entry) * 100;
-        exited = true;
-      }
-      if (exited) {
-        open.exitTime = cdl.t;
-        open.barsHeld = i - open.entryIdx;
-        trades.push(open);
-        open = null;
+        setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastCandleT, selected, notifOn]);
 
-    // 沒在交易中：跑 SMC 看是否進場
-    if (!open) {
-      const slice = candles.slice(0, i + 1);
-      const smc = analyzeSMC(slice);
-      if (!smc) continue;
-      const atr = atrs[i];
-      if (!atr) continue;
-      const isLong = smc.signal.includes("做多");
-      const isShort = smc.signal.includes("做空");
-      if (!isLong && !isShort) continue;
-      // 過濾低信心訊號
-      if (smc.confidence < 30) continue;
-      open = {
-        entryIdx: i,
-        entryTime: cdl.t,
-        entry: cdl.c,
-        isLong,
-        signal: smc.signal,
-        confidence: smc.confidence,
-        structure: smc.structure,
-        stop: isLong ? cdl.c - atr * atrMult : cdl.c + atr * atrMult,
-        target: isLong ? cdl.c + atr * targetMult : cdl.c - atr * targetMult,
-      };
-    }
-  }
+  // SMC 多時區
+  useEffect(() => {
+    if (!selected) return; let cancel = false;
+    analyzeSMCMulti(selected).then((r) => { if (!cancel) setSmcMulti(r); });
+    return () => { cancel = true; };
+  }, [selected]);
 
-  // 統計
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
-  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
-  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
-  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
-  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : (totalWin > 0 ? 99 : 0);
+  // 多週期漲跌
+  useEffect(() => {
+    if (!selected) { setPeriodChg(null); return; }
+    let cancel = false;
+    setPeriodChg(null);
+    loadPeriodChanges(selected).then((r) => { if (!cancel) setPeriodChg(r); });
+    return () => { cancel = true; };
+  }, [selected]);
 
-  // 累積績效曲線
-  let cum = 0;
-  const equity = trades.map((t) => { cum += t.pnl; return { t: t.exitTime, cum }; });
-
-  // 最大回撤
-  let peak = 0, maxDD = 0;
-  equity.forEach((e) => {
-    if (e.cum > peak) peak = e.cum;
-    if (e.cum - peak < maxDD) maxDD = e.cum - peak;
-  });
-
-  return {
-    trades,
-    stats: {
-      total: trades.length,
-      wins: wins.length,
-      losses: losses.length,
-      winRate,
-      totalPnl,
-      avgWin,
-      avgLoss,
-      profitFactor,
-      maxDD,
-    },
-    equity,
-  };
-}
-
-// ═══════════ 期貨 API (Binance fapi) ═══════════════════════════════════════
-function fpsym(item) { return item.binanceSymbol || `${item.name}USDT`; }
-
-// 資金費率 + 標記價
-export async function loadFundingRate(item) {
-  const sym = fpsym(item);
-  const d = await jget(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${sym}`, { useProxy: true });
-  if (!d || d.lastFundingRate == null) return null;
-  return {
-    funding: parseFloat(d.lastFundingRate) || 0,
-    nextFundingTime: d.nextFundingTime,
-    markPrice: parseFloat(d.markPrice) || 0,
-  };
-}
-
-// 現在 OI（合約持倉量）
-export async function loadOpenInterest(item) {
-  const sym = fpsym(item);
-  const d = await jget(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${sym}`, { useProxy: true });
-  if (!d) return null;
-  return { oi: parseFloat(d.openInterest) || 0, time: d.time };
-}
-
-// OI 歷史 - 用於計算變化率
-export async function loadOIHist(item, period = "5m", limit = 12) {
-  const sym = fpsym(item);
-  const d = await jget(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=${period}&limit=${limit}`, { useProxy: true });
-  if (!Array.isArray(d) || !d.length) return null;
-  return d.map(r => ({
-    t: r.timestamp,
-    oi: parseFloat(r.sumOpenInterest) || 0,
-    oiUSD: parseFloat(r.sumOpenInterestValue) || 0,
-  }));
-}
-
-// 散戶多空比（全市場 account ratio，散戶傾向反向指標）
-export async function loadGlobalLongShort(item, period = "5m", limit = 6) {
-  const sym = fpsym(item);
-  const d = await jget(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=${period}&limit=${limit}`, { useProxy: true });
-  if (!Array.isArray(d) || !d.length) return null;
-  const last = d[d.length - 1];
-  return {
-    ratio: parseFloat(last.longShortRatio) || 0,
-    longPct: (parseFloat(last.longAccount) || 0) * 100,
-    shortPct: (parseFloat(last.shortAccount) || 0) * 100,
-  };
-}
-
-// 大戶多空比（top trader by position，較具參考價值）
-export async function loadTopLongShortPosition(item, period = "5m", limit = 6) {
-  const sym = fpsym(item);
-  const d = await jget(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${sym}&period=${period}&limit=${limit}`, { useProxy: true });
-  if (!Array.isArray(d) || !d.length) return null;
-  const last = d[d.length - 1];
-  return {
-    ratio: parseFloat(last.longShortRatio) || 0,
-    longPct: (parseFloat(last.longAccount) || 0) * 100,
-    shortPct: (parseFloat(last.shortAccount) || 0) * 100,
-  };
-}
-
-// Taker buy/sell volume（主動買賣 → 近似 CVD）
-export async function loadTakerVolume(item, period = "5m", limit = 6) {
-  const sym = fpsym(item);
-  const d = await jget(`https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=${sym}&period=${period}&limit=${limit}`, { useProxy: true });
-  if (!Array.isArray(d) || !d.length) return null;
-  const last = d[d.length - 1];
-  const cvdProxy = d.reduce((sum, r) => sum + (parseFloat(r.buyVol || 0) - parseFloat(r.sellVol || 0)), 0);
-  return {
-    ratio: parseFloat(last.buySellRatio) || 0,
-    buyVol: parseFloat(last.buyVol) || 0,
-    sellVol: parseFloat(last.sellVol) || 0,
-    cvdRecent: cvdProxy,
-    trend: cvdProxy > 0 ? "資金流入" : cvdProxy < 0 ? "資金流出" : "持平",
-  };
-}
-
-// 相對強弱 vs BTC（24h 收盤變化差）
-export async function loadRelativeStrengthVsBTC(item) {
-  if (!item || item.name === "BTC") return { rs: 0, label: "基準", coinChg: 0, btcChg: 0 };
-  const [coinK, btcK] = await Promise.all([
-    klinesBinance(item, "1H"),
-    klinesBinance({ name: "BTC", binanceSymbol: "BTCUSDT" }, "1H"),
-  ]);
-  if (!coinK || !btcK || coinK.length < 25 || btcK.length < 25) return null;
-  const coinNow = coinK[coinK.length - 1].c, coinBase = coinK[coinK.length - 25].c;
-  const btcNow = btcK[btcK.length - 1].c, btcBase = btcK[btcK.length - 25].c;
-  const coinChg = (coinNow - coinBase) / coinBase * 100;
-  const btcChg = (btcNow - btcBase) / btcBase * 100;
-  const rs = coinChg - btcChg;
-  return { rs, coinChg, btcChg, label: rs > 2 ? "強勢" : rs < -2 ? "弱勢" : "同步" };
-}
-
-// ═══════════ AI 加密貨幣深度分析 ═══════════════════════════════════════════
-export async function aiAnalyzeCryptoDeep(item, candles, smc, smcMulti) {
-  if (!candles || candles.length < 50 || !smc || !item) return null;
-
-  const [funding, oi, oiHist, globalLS, topLS, taker, rsBTC] = await Promise.all([
-    loadFundingRate(item).catch(() => null),
-    loadOpenInterest(item).catch(() => null),
-    loadOIHist(item, "5m", 12).catch(() => null),
-    loadGlobalLongShort(item).catch(() => null),
-    loadTopLongShortPosition(item).catch(() => null),
-    loadTakerVolume(item).catch(() => null),
-    loadRelativeStrengthVsBTC(item).catch(() => null),
-  ]);
-
-  let bullScore = 0, bearScore = 0;
-  const factors = [];
-
-  // SMC 多時區共振
-  const valid = (smcMulti || []).filter(m => m.result);
-  const longs = valid.filter(m => m.result.signal.includes("做多")).length;
-  const shorts = valid.filter(m => m.result.signal.includes("做空")).length;
-  if (longs >= 3) { bullScore += 3; factors.push({ k: "多時區共振", v: `${longs}/${valid.length} 多頭`, side: "bull" }); }
-  else if (shorts >= 3) { bearScore += 3; factors.push({ k: "多時區共振", v: `${shorts}/${valid.length} 空頭`, side: "bear" }); }
-  else if (longs > shorts) { bullScore += 1; factors.push({ k: "多時區共振", v: `${longs}多 / ${shorts}空`, side: "bull" }); }
-  else if (shorts > longs) { bearScore += 1; factors.push({ k: "多時區共振", v: `${shorts}空 / ${longs}多`, side: "bear" }); }
-  else factors.push({ k: "多時區共振", v: "分歧", side: "neutral" });
-
-  // SMC 主訊號
-  if (smc.signal.includes("強力做多")) { bullScore += 2; factors.push({ k: "SMC 結構", v: smc.signal, side: "bull" }); }
-  else if (smc.signal.includes("做多")) { bullScore += 1; factors.push({ k: "SMC 結構", v: smc.signal, side: "bull" }); }
-  else if (smc.signal.includes("強力做空")) { bearScore += 2; factors.push({ k: "SMC 結構", v: smc.signal, side: "bear" }); }
-  else if (smc.signal.includes("做空")) { bearScore += 1; factors.push({ k: "SMC 結構", v: smc.signal, side: "bear" }); }
-  else factors.push({ k: "SMC 結構", v: "觀望", side: "neutral" });
-
-  // 資金費率
-  if (funding) {
-    const fr = funding.funding * 100;
-    if (fr > 0.05) { bearScore += 1; factors.push({ k: "資金費率", v: `+${fr.toFixed(4)}% (多頭擁擠)`, side: "bear" }); }
-    else if (fr < -0.02) { bullScore += 1; factors.push({ k: "資金費率", v: `${fr.toFixed(4)}% (空頭擁擠)`, side: "bull" }); }
-    else factors.push({ k: "資金費率", v: `${fr.toFixed(4)}% (中性)`, side: "neutral" });
-  }
-
-  // OI 變化 + 價格組合
-  let oiChg = null;
-  if (oiHist && oiHist.length >= 6) {
-    const oiNow = oiHist[oiHist.length - 1].oi, oiOld = oiHist[0].oi;
-    if (oiOld > 0) oiChg = (oiNow - oiOld) / oiOld * 100;
-  }
-  if (oiChg != null) {
-    const cls = candles.map(c => c.c);
-    const lastP = cls[cls.length - 1], baseP = cls[Math.max(0, cls.length - 13)];
-    const pChg = baseP > 0 ? (lastP - baseP) / baseP * 100 : 0;
-    if (oiChg > 3 && pChg > 0) { bullScore += 2; factors.push({ k: "OI + 價格", v: `OI +${oiChg.toFixed(1)}% 價 +${pChg.toFixed(1)}% (健康多頭)`, side: "bull" }); }
-    else if (oiChg > 3 && pChg < 0) { bearScore += 1; factors.push({ k: "OI + 價格", v: `OI +${oiChg.toFixed(1)}% 價 ${pChg.toFixed(1)}% (空單建倉)`, side: "bear" }); }
-    else if (oiChg < -3 && pChg > 0) { bullScore += 1; factors.push({ k: "OI + 價格", v: `OI ${oiChg.toFixed(1)}% 價 +${pChg.toFixed(1)}% (空單回補)`, side: "bull" }); }
-    else if (oiChg < -3 && pChg < 0) { factors.push({ k: "OI + 價格", v: `OI ${oiChg.toFixed(1)}% 價 ${pChg.toFixed(1)}% (多頭離場)`, side: "neutral" }); }
-    else factors.push({ k: "OI 變化", v: `${oiChg.toFixed(1)}%`, side: "neutral" });
-  }
-
-  // 多空情緒（散戶常反向、大戶常正向）
-  if (globalLS && topLS) {
-    if (globalLS.ratio < 0.85 && topLS.ratio > 1.15) { bullScore += 2; factors.push({ k: "多空情緒", v: `散戶看空 ${globalLS.ratio.toFixed(2)} 大戶看多 ${topLS.ratio.toFixed(2)} (反指標利多)`, side: "bull" }); }
-    else if (globalLS.ratio > 1.4 && topLS.ratio < 0.9) { bearScore += 2; factors.push({ k: "多空情緒", v: `散戶看多 ${globalLS.ratio.toFixed(2)} 大戶看空 ${topLS.ratio.toFixed(2)} (反指標利空)`, side: "bear" }); }
-    else if (topLS.ratio > 1.2) { bullScore += 1; factors.push({ k: "多空情緒", v: `大戶看多 (${topLS.ratio.toFixed(2)})`, side: "bull" }); }
-    else if (topLS.ratio < 0.85) { bearScore += 1; factors.push({ k: "多空情緒", v: `大戶看空 (${topLS.ratio.toFixed(2)})`, side: "bear" }); }
-    else factors.push({ k: "多空情緒", v: `散戶 ${globalLS.ratio.toFixed(2)} 大戶 ${topLS.ratio.toFixed(2)}`, side: "neutral" });
-  }
-
-  // Taker CVD
-  if (taker) {
-    if (taker.cvdRecent > 0 && taker.ratio > 1.1) { bullScore += 1; factors.push({ k: "Taker CVD", v: `資金流入 (買賣比 ${taker.ratio.toFixed(2)})`, side: "bull" }); }
-    else if (taker.cvdRecent < 0 && taker.ratio < 0.9) { bearScore += 1; factors.push({ k: "Taker CVD", v: `資金流出 (買賣比 ${taker.ratio.toFixed(2)})`, side: "bear" }); }
-    else factors.push({ k: "Taker CVD", v: `${taker.trend} (比 ${taker.ratio.toFixed(2)})`, side: "neutral" });
-  }
-
-  // vs BTC
-  if (rsBTC && item.name !== "BTC") {
-    if (rsBTC.rs > 2) { bullScore += 1; factors.push({ k: "vs BTC", v: `強勢 +${rsBTC.rs.toFixed(1)}%`, side: "bull" }); }
-    else if (rsBTC.rs < -2) { bearScore += 1; factors.push({ k: "vs BTC", v: `弱勢 ${rsBTC.rs.toFixed(1)}%`, side: "bear" }); }
-    else factors.push({ k: "vs BTC", v: `同步 ${rsBTC.rs.toFixed(1)}%`, side: "neutral" });
-  }
-
-  // ATR for trade plan
-  const highs = candles.map(c => c.h), lows = candles.map(c => c.l), closes = candles.map(c => c.c);
-  const atr = calcATR(highs, lows, closes);
-  const atrNow = atr[atr.length - 1] || (closes[closes.length - 1] * 0.01);
-
-  const totalScore = bullScore - bearScore;
-  const conf = Math.min(95, Math.round((Math.abs(totalScore) / 10) * 100));
-
-  let direction = "觀望", color = "#787b86", emoji = "⚖️";
-  if (totalScore >= 7) { direction = "強烈做多"; color = "#26a69a"; emoji = "🚀"; }
-  else if (totalScore >= 4) { direction = "做多"; color = "#26a69a"; emoji = "📈"; }
-  else if (totalScore <= -7) { direction = "強烈做空"; color = "#ef5350"; emoji = "💥"; }
-  else if (totalScore <= -4) { direction = "做空"; color = "#ef5350"; emoji = "📉"; }
-  else if (totalScore >= 2) { direction = "偏多"; color = "#7fb284"; emoji = "↗️"; }
-  else if (totalScore <= -2) { direction = "偏空"; color = "#d98890"; emoji = "↘️"; }
-
-  const isLong = totalScore > 0;
-  const price = closes[closes.length - 1];
-  const entry = price;
-  const stop = isLong ? price - atrNow * 1.5 : price + atrNow * 1.5;
-  const target1 = isLong ? price + atrNow * 2 : price - atrNow * 2;
-  const target2 = isLong ? price + atrNow * 4 : price - atrNow * 4;
-  const rr = Math.abs(target1 - entry) / Math.max(Math.abs(entry - stop), 1e-9);
-
-  const summary = totalScore === 0
-    ? "目前訊號分歧或盤整，建議觀望等待更明確方向。"
-    : `${emoji} 綜合判斷偏向 ${direction}，信心度 ${conf}%。整合 SMC 結構、期貨資金面、多空情緒、Taker CVD 與 vs BTC 多面向訊號。`;
-
-  return {
-    direction, color, emoji, confidence: conf, score: totalScore,
-    factors, summary,
-    plan: { entry, stop, target1, target2, rr: rr.toFixed(2), atr: atrNow, isLong },
-    extra: { funding, oi, oiChg, globalLS, topLS, taker, rsBTC },
-    risk: "本分析整合期貨資金面與技術面，僅供參考。實際交易請結合資金管理。",
-  };
-}
-
-// 維持舊 aiAnalyze 名稱兼容（其他地方可能引用）— 改 alias
-export function aiAnalyze(item, candles, smc, smcMulti) {
-  // 同步版簡化（不抓期貨）— 給快速顯示用
-  if (!candles || candles.length < 50 || !smc) return null;
-  const closes = candles.map(c => c.c), highs = candles.map(c => c.h), lows = candles.map(c => c.l), vols = candles.map(c => c.v || 0);
-  const n = closes.length - 1, price = closes[n];
-  let bullScore = 0, bearScore = 0;
-  const factors = [];
-
-  const valid = (smcMulti || []).filter(m => m.result);
-  const longs = valid.filter(m => m.result.signal.includes("做多")).length;
-  const shorts = valid.filter(m => m.result.signal.includes("做空")).length;
-  if (longs >= 3) { bullScore += 3; factors.push({ k: "多時區共振", v: `${longs}/${valid.length} 多頭`, side: "bull" }); }
-  else if (shorts >= 3) { bearScore += 3; factors.push({ k: "多時區共振", v: `${shorts}/${valid.length} 空頭`, side: "bear" }); }
-  else if (longs > shorts) { bullScore += 1; factors.push({ k: "多時區共振", v: `${longs}多/${shorts}空`, side: "bull" }); }
-  else if (shorts > longs) { bearScore += 1; factors.push({ k: "多時區共振", v: `${shorts}空/${longs}多`, side: "bear" }); }
-  else factors.push({ k: "多時區共振", v: "分歧", side: "neutral" });
-
-  if (smc.signal.includes("強力做多")) { bullScore += 2; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bull" }); }
-  else if (smc.signal.includes("做多")) { bullScore += 1; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bull" }); }
-  else if (smc.signal.includes("強力做空")) { bearScore += 2; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bear" }); }
-  else if (smc.signal.includes("做空")) { bearScore += 1; factors.push({ k: "SMC 主訊號", v: smc.signal, side: "bear" }); }
-  else factors.push({ k: "SMC 主訊號", v: "觀望", side: "neutral" });
-
-  const ma5 = calcSMA(closes, 5)[n], ma20 = calcSMA(closes, 20)[n], ma60 = calcSMA(closes, 60)[n];
-  if (ma5 && ma20 && ma60) {
-    if (ma5 > ma20 && ma20 > ma60) { bullScore += 2; factors.push({ k: "均線排列", v: "多頭排列", side: "bull" }); }
-    else if (ma5 < ma20 && ma20 < ma60) { bearScore += 2; factors.push({ k: "均線排列", v: "空頭排列", side: "bear" }); }
-    else factors.push({ k: "均線排列", v: "糾結", side: "neutral" });
-  }
-
-  const atr = calcATR(highs, lows, closes);
-  const atrNow = atr[n] || (price * 0.01);
-  const totalScore = bullScore - bearScore;
-  const conf = Math.min(95, Math.round((Math.abs(totalScore) / 7) * 100));
-
-  let direction = "觀望", color = "#787b86", emoji = "⚖️";
-  if (totalScore >= 5) { direction = "強烈做多"; color = "#26a69a"; emoji = "🚀"; }
-  else if (totalScore >= 3) { direction = "做多"; color = "#26a69a"; emoji = "📈"; }
-  else if (totalScore <= -5) { direction = "強烈做空"; color = "#ef5350"; emoji = "💥"; }
-  else if (totalScore <= -3) { direction = "做空"; color = "#ef5350"; emoji = "📉"; }
-  else if (totalScore >= 1) { direction = "偏多"; color = "#7fb284"; emoji = "↗️"; }
-  else if (totalScore <= -1) { direction = "偏空"; color = "#d98890"; emoji = "↘️"; }
-
-  const isLong = totalScore > 0;
-  const entry = price;
-  const stop = isLong ? price - atrNow * 1.5 : price + atrNow * 1.5;
-  const target1 = isLong ? price + atrNow * 2 : price - atrNow * 2;
-  const target2 = isLong ? price + atrNow * 4 : price - atrNow * 4;
-  const rr = Math.abs(target1 - entry) / Math.max(Math.abs(entry - stop), 1e-9);
-  const summary = totalScore === 0
-    ? "目前訊號分歧或盤整，建議觀望等待更明確方向。"
-    : `${emoji} 綜合判斷偏向 ${direction}，信心度 ${conf}%。`;
-
-  return {
-    direction, color, emoji, confidence: conf, score: totalScore, factors, summary,
-    plan: { entry, stop, target1, target2, rr: rr.toFixed(2), atr: atrNow, isLong },
-    risk: "本分析為演算法綜合多項技術指標，僅供參考。",
-  };
-}
-
-// ═══════════ 多空推薦掃描 ═══════════════════════════════════════════════════
-// 掃前 N 大成交量幣 → SMC 評分 → 分多空兩欄
-export async function scanRecommendations(coins, top = 200) {
-  const cands = coins.slice(0, Math.min(top, coins.length));
-  const results = [];
-  for (let i = 0; i < cands.length; i += 20) {
-    const batch = cands.slice(i, i + 20);
-    const ks = await Promise.all(batch.map(c => klinesBinance(c, "1H").catch(() => null)));
-    batch.forEach((coin, j) => {
-      const k = ks[j];
-      if (!k || k.length < 40) return;
-      const smc = analyzeSMC(k);
-      if (!smc) return;
-      results.push({
-        symbol: coin.symbol, name: coin.name, label: coin.label,
-        price: coin.price, change: coin.change, volume: coin.volume,
-        binanceSymbol: coin.binanceSymbol, cat: "crypto",
-        signal: smc.signal, score: smc.score, confidence: smc.confidence,
-        structure: smc.structure,
+  // Trade WebSocket（即時價）
+  useEffect(() => {
+    if (!selected || selected.cat !== "crypto") return;
+    let lastTs = 0;
+    const sym = selected.binanceSymbol || `${selected.name}USDT`;
+    const off = subscribeCryptoTicker(sym, (p) => {
+      const now = Date.now();
+      if (now - lastTs < 200) return;
+      lastTs = now;
+      setCandles((cs) => {
+        if (!cs || !cs.length) return cs;
+        const copy = cs.slice();
+        const last = { ...copy[copy.length - 1] };
+        last.c = p;
+        if (p > last.h) last.h = p;
+        if (p < last.l) last.l = p;
+        copy[copy.length - 1] = last;
+        return copy;
       });
     });
-    if (i + 20 < cands.length) await new Promise(r => setTimeout(r, 150));
-  }
-  const longs = results.filter(r => r.signal.includes("做多")).sort((a, b) => b.score - a.score).slice(0, 15);
-  const shorts = results.filter(r => r.signal.includes("做空")).sort((a, b) => a.score - b.score).slice(0, 15);
-  return { longs, shorts, scanned: results.length, total: cands.length };
-}
+    return () => off();
+  }, [selected]);
 
-// ═══════════ 持倉異常警報掃描 ═══════════════════════════════════════════════
-// 每 3 分鐘掃前 N 幣，對比 OI 5m 變化 + 24h 價格變化
-// 觸發類型：多頭觸發 / 空頭觸發 / 誘空 / 疑似反轉
-export async function scanAnomalies(coins, top = 200) {
-  const cands = coins.slice(0, Math.min(top, coins.length));
-  const alerts = [];
-  for (let i = 0; i < cands.length; i += 15) {
-    const batch = cands.slice(i, i + 15);
-    const data = await Promise.all(batch.map(async (coin) => {
-      const oiHist = await loadOIHist(coin, "5m", 6).catch(() => null);
-      return { coin, oiHist };
-    }));
-    data.forEach(({ coin, oiHist }) => {
-      if (!oiHist || oiHist.length < 4) return;
-      const oiNow = oiHist[oiHist.length - 1].oi;
-      const oiBase = oiHist.slice(0, -1).reduce((s, x) => s + x.oi, 0) / (oiHist.length - 1);
-      if (oiBase <= 0) return;
-      const oiChgPct = (oiNow - oiBase) / oiBase * 100;
-      const priceChg = coin.change || 0;
-      let type = null, severity = Math.abs(oiChgPct), color = "#787b86";
-      // 用 ±4% 當門檻，避免噪音
-      if (oiChgPct > 4 && priceChg > 0) { type = "多頭觸發"; color = "#26a69a"; }
-      else if (oiChgPct > 4 && priceChg < -1) { type = "誘空 (OI增+價跌)"; color = "#ef5350"; }
-      else if (oiChgPct < -4 && priceChg > 1) { type = "疑似反轉 (OI減+價升)"; color = "#f0b90b"; }
-      else if (oiChgPct < -4 && priceChg < 0) { type = "空頭觸發"; color = "#ef5350"; }
-      if (type) {
-        alerts.push({
-          symbol: coin.symbol, name: coin.name, label: coin.label,
-          price: coin.price, change: priceChg, volume: coin.volume,
-          binanceSymbol: coin.binanceSymbol, cat: "crypto",
-          type, color, oiChgPct, severity, ts: Date.now(),
-        });
-      }
-    });
-    if (i + 15 < cands.length) await new Promise(r => setTimeout(r, 250));
-  }
-  return alerts.sort((a, b) => b.severity - a.severity);
-}
+  // 推薦掃描
+  const coinsLoaded = coins.length > 0;
+  useEffect(() => {
+    if (sideTab !== "recs" || !coinsLoaded) return;
+    if (recs && Date.now() - recsTs < 5 * 60 * 1000) return;
+    let cancel = false;
+    setRecsLoading(true);
+    scanRecommendations(coins, 200).then((r) => {
+      if (cancel) return;
+      setRecs(r); setRecsTs(Date.now()); setRecsLoading(false);
+    }).catch(() => { if (!cancel) setRecsLoading(false); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sideTab, coinsLoaded, recsTs]);
 
-// ═══════════ 多 AI 個別分析（5 個派系）═══════════════════════════════════════
-function formatAIResult(name, emoji, score, maxScore, reasons) {
-  let direction = "觀望", color = "#787b86";
-  if (score >= maxScore * 0.7) { direction = "強烈做多"; color = "#26a69a"; }
-  else if (score >= maxScore * 0.3) { direction = "做多"; color = "#26a69a"; }
-  else if (score <= -maxScore * 0.7) { direction = "強烈做空"; color = "#ef5350"; }
-  else if (score <= -maxScore * 0.3) { direction = "做空"; color = "#ef5350"; }
-  const confidence = Math.min(99, Math.round((Math.abs(score) / maxScore) * 100));
-  return { name, emoji, direction, color, confidence, score, reasons };
-}
-
-// AI 1: 趨勢跟隨派 — 均線、ADX、動能
-function aiTrendFollower(candles) {
-  const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l);
-  const n = closes.length - 1;
-  let score = 0;
-  const reasons = [];
-  const ma5 = calcSMA(closes, 5)[n], ma20 = calcSMA(closes, 20)[n], ma60 = calcSMA(closes, 60)[n];
-  if (ma5 && ma20 && ma60) {
-    if (ma5 > ma20 && ma20 > ma60) { score += 3; reasons.push("均線多頭排列 (5>20>60)"); }
-    else if (ma5 < ma20 && ma20 < ma60) { score -= 3; reasons.push("均線空頭排列 (5<20<60)"); }
-    else reasons.push("均線糾結");
-  }
-  const adx = calcADX(highs, lows, closes)[n];
-  if (adx != null) {
-    if (adx > 25) reasons.push(`趨勢強勁 (ADX ${adx.toFixed(0)})`);
-    else if (adx > 15) reasons.push(`趨勢中等 (ADX ${adx.toFixed(0)})`);
-    else { reasons.push(`盤整 (ADX ${adx.toFixed(0)}, 訊號減半)`); score *= 0.5; }
-  }
-  if (n >= 10) {
-    const recent = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
-    const base = closes.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
-    const mom = ((recent - base) / base) * 100;
-    if (mom > 1) { score += 1; reasons.push(`短期動能 +${mom.toFixed(1)}%`); }
-    else if (mom < -1) { score -= 1; reasons.push(`短期動能 ${mom.toFixed(1)}%`); }
-  }
-  return formatAIResult("趨勢跟隨", "🏃", score, 5, reasons);
-}
-
-// AI 2: 均值回歸派 — RSI / KDJ / 布林帶反向
-function aiMeanReversion(candles) {
-  const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l);
-  const n = closes.length - 1;
-  let score = 0;
-  const reasons = [];
-  const rsi = calcRSI(closes)[n];
-  if (rsi != null) {
-    if (rsi > 75) { score -= 2; reasons.push(`RSI ${rsi.toFixed(0)} 超買，預期回落`); }
-    else if (rsi < 25) { score += 2; reasons.push(`RSI ${rsi.toFixed(0)} 超賣，預期反彈`); }
-    else reasons.push(`RSI ${rsi.toFixed(0)} 中性`);
-  }
-  const kdj = calcKDJ(highs, lows, closes)[n];
-  if (kdj?.k != null) {
-    if (kdj.k > 80) { score -= 1; reasons.push(`KDJ K=${kdj.k.toFixed(0)} 過熱`); }
-    else if (kdj.k < 20) { score += 1; reasons.push(`KDJ K=${kdj.k.toFixed(0)} 過冷`); }
-  }
-  if (n >= 20) {
-    const window = closes.slice(n - 19, n + 1);
-    const mean = window.reduce((s, x) => s + x, 0) / 20;
-    const std = Math.sqrt(window.reduce((s, x) => s + (x - mean) ** 2, 0) / 20);
-    const upper = mean + std * 2, lower = mean - std * 2;
-    const price = closes[n];
-    if (price > upper) { score -= 2; reasons.push("價突破布林上軌，預期回落"); }
-    else if (price < lower) { score += 2; reasons.push("價跌破布林下軌，預期反彈"); }
-    else reasons.push("價在布林帶內");
-  }
-  return formatAIResult("均值回歸", "🔁", score, 5, reasons);
-}
-
-// AI 3: SMC 機構派 — 用現有 SMC 引擎
-function aiSMCFlavor(smc, smcMulti) {
-  let score = 0;
-  const reasons = [];
-  if (!smc) return formatAIResult("SMC 機構", "🏛️", 0, 1, ["SMC 資料不足"]);
-  if (smc.signal.includes("強力做多")) { score += 4; reasons.push(`主訊號：${smc.signal}`); }
-  else if (smc.signal.includes("做多")) { score += 2; reasons.push(`主訊號：${smc.signal}`); }
-  else if (smc.signal.includes("強力做空")) { score -= 4; reasons.push(`主訊號：${smc.signal}`); }
-  else if (smc.signal.includes("做空")) { score -= 2; reasons.push(`主訊號：${smc.signal}`); }
-  else reasons.push("主訊號：觀望");
-  const valid = (smcMulti || []).filter((m) => m.result);
-  const longs = valid.filter((m) => m.result.signal.includes("做多")).length;
-  const shorts = valid.filter((m) => m.result.signal.includes("做空")).length;
-  if (longs >= 3) { score += 2; reasons.push(`多時區共振 ${longs}/${valid.length} 多頭`); }
-  else if (shorts >= 3) { score -= 2; reasons.push(`多時區共振 ${shorts}/${valid.length} 空頭`); }
-  if (smc.structure.includes("上升")) reasons.push("市場結構：上升");
-  else if (smc.structure.includes("下降")) reasons.push("市場結構：下降");
-  if (smc.fvg) reasons.push(`${smc.fvg.type === "bull" ? "多頭" : "空頭"} FVG 失衡`);
-  if (smc.ob) reasons.push(`${smc.ob.type === "bull" ? "多頭" : "空頭"} 訂單塊`);
-  if (smc.sweep) reasons.push(smc.sweep);
-  return formatAIResult("SMC 機構", "🏛️", score, 8, reasons);
-}
-
-// AI 4: 期貨情緒派 — Funding / OI / 多空比 / Taker CVD
-async function aiFuturesSentiment(item, candles) {
-  let score = 0;
-  const reasons = [];
-  const [funding, oiHist, globalLS, topLS, taker] = await Promise.all([
-    loadFundingRate(item).catch(() => null),
-    loadOIHist(item, "5m", 12).catch(() => null),
-    loadGlobalLongShort(item).catch(() => null),
-    loadTopLongShortPosition(item).catch(() => null),
-    loadTakerVolume(item).catch(() => null),
-  ]);
-  if (funding) {
-    const fr = funding.funding * 100;
-    if (fr > 0.05) { score -= 1; reasons.push(`資金費率 +${fr.toFixed(4)}% 多頭擁擠`); }
-    else if (fr < -0.02) { score += 1; reasons.push(`資金費率 ${fr.toFixed(4)}% 空頭擁擠`); }
-    else reasons.push(`資金費率 ${fr.toFixed(4)}% 中性`);
-  }
-  if (oiHist && oiHist.length >= 6) {
-    const oiNow = oiHist[oiHist.length - 1].oi, oiOld = oiHist[0].oi;
-    if (oiOld > 0) {
-      const oiChg = ((oiNow - oiOld) / oiOld) * 100;
-      const cls = candles.map((c) => c.c);
-      const baseP = cls[Math.max(0, cls.length - 13)];
-      const pChg = baseP > 0 ? ((cls[cls.length - 1] - baseP) / baseP) * 100 : 0;
-      if (oiChg > 3 && pChg > 0) { score += 2; reasons.push(`OI +${oiChg.toFixed(1)}% 價漲 健康多頭`); }
-      else if (oiChg > 3 && pChg < 0) { score -= 1; reasons.push(`OI +${oiChg.toFixed(1)}% 價跌 空單建倉`); }
-      else if (oiChg < -3 && pChg > 0) { score += 1; reasons.push(`OI ${oiChg.toFixed(1)}% 價漲 空單回補`); }
-      else if (oiChg < -3 && pChg < 0) reasons.push(`OI ${oiChg.toFixed(1)}% 價跌 多頭離場`);
-    }
-  }
-  if (globalLS && topLS) {
-    if (globalLS.ratio < 0.85 && topLS.ratio > 1.15) { score += 2; reasons.push(`散戶看空 大戶看多 反指標利多`); }
-    else if (globalLS.ratio > 1.4 && topLS.ratio < 0.9) { score -= 2; reasons.push(`散戶看多 大戶看空 反指標利空`); }
-    else if (topLS.ratio > 1.2) { score += 1; reasons.push(`大戶看多 (${topLS.ratio.toFixed(2)})`); }
-    else if (topLS.ratio < 0.85) { score -= 1; reasons.push(`大戶看空 (${topLS.ratio.toFixed(2)})`); }
-  }
-  if (taker) {
-    if (taker.cvdRecent > 0 && taker.ratio > 1.1) { score += 1; reasons.push("主動買盤資金流入"); }
-    else if (taker.cvdRecent < 0 && taker.ratio < 0.9) { score -= 1; reasons.push("主動賣盤資金流出"); }
-  }
-  if (reasons.length === 0) reasons.push("無法取得期貨資料");
-  return formatAIResult("期貨情緒", "💰", score, 7, reasons);
-}
-
-// AI 5: 整合派 — 看其他四個的共識
-function aiConsensus(otherAIs) {
-  let total = 0;
-  const reasons = [];
-  otherAIs.forEach((ai) => {
-    if (!ai) return;
-    if (ai.direction !== "觀望") {
-      const v = ai.direction.includes("做多") ? 1 : ai.direction.includes("做空") ? -1 : 0;
-      total += v * (ai.confidence / 100);
-      reasons.push(`${ai.emoji} ${ai.name}：${ai.direction} ${ai.confidence}%`);
-    } else {
-      reasons.push(`${ai.emoji} ${ai.name}：觀望`);
-    }
-  });
-  return formatAIResult("整合共識", "🧠", total * 2.5, 4, reasons);
-}
-
-// 主入口：執行所有 AI，回傳 5 個結果
-export async function analyzeMultiAI(item, candles, smc, smcMulti) {
-  if (!candles || candles.length < 30) return null;
-  const trend = aiTrendFollower(candles);
-  const reversion = aiMeanReversion(candles);
-  const smcA = aiSMCFlavor(smc, smcMulti);
-  const futures = await aiFuturesSentiment(item, candles);
-  const consensus = aiConsensus([trend, reversion, smcA, futures]);
-  return [trend, reversion, smcA, futures, consensus];
-}
-
-// ═══════════ 高勝率回測（多時區策略）═══════════════════════════════════════
-// 1D 趨勢確認 + 4H ADX>20 + 4H 方向一致 + 1H SMC 進場 + 量能確認
-export async function backtestMTF(item, opts = {}) {
-  const { atrMult = 1.5, targetMult = 3, maxBars = 30, minConfidence = 50 } = opts;
-
-  const [c1H, c4H, c1D] = await Promise.all([
-    loadKlines(item, "1H").catch(() => null),
-    loadKlines(item, "4H").catch(() => null),
-    loadKlines(item, "1D").catch(() => null),
-  ]);
-
-  if (!c1H || !c4H || !c1D || c1H.length < 80 || c4H.length < 50 || c1D.length < 50) {
-    return null;
-  }
-
-  const findIdx = (arr, t) => {
-    let lo = 0, hi = arr.length - 1, ans = -1;
-    while (lo <= hi) {
-      const m = (lo + hi) >> 1;
-      if (arr[m].t <= t) { ans = m; lo = m + 1; }
-      else hi = m - 1;
-    }
-    return ans;
-  };
-
-  const c4HHighs = c4H.map((c) => c.h), c4HLows = c4H.map((c) => c.l), c4HCloses = c4H.map((c) => c.c);
-  const atr4H = calcATR(c4HHighs, c4HLows, c4HCloses);
-  const adx4H = calcADX(c4HHighs, c4HLows, c4HCloses);
-
-  const trades = [];
-  let open = null;
-  const startIdx = 60;
-
-  for (let i = startIdx; i < c1H.length; i++) {
-    const cdl = c1H[i];
-
-    if (open) {
-      let exited = false;
-      if (open.isLong) {
-        if (cdl.l <= open.stop) { open.exit = open.stop; open.exitReason = "止損"; open.pnl = ((open.stop - open.entry) / open.entry) * 100; exited = true; }
-        else if (cdl.h >= open.target) { open.exit = open.target; open.exitReason = "目標達成"; open.pnl = ((open.target - open.entry) / open.entry) * 100; exited = true; }
-      } else {
-        if (cdl.h >= open.stop) { open.exit = open.stop; open.exitReason = "止損"; open.pnl = ((open.entry - open.stop) / open.entry) * 100; exited = true; }
-        else if (cdl.l <= open.target) { open.exit = open.target; open.exitReason = "目標達成"; open.pnl = ((open.entry - open.target) / open.entry) * 100; exited = true; }
-      }
-      if (!exited) {
-        const i1D = findIdx(c1D, cdl.t);
-        if (i1D >= 40) {
-          const smc1D = analyzeSMC(c1D.slice(0, i1D + 1));
-          if (smc1D) {
-            if (open.isLong && smc1D.structure.includes("下降")) {
-              open.exit = cdl.c; open.exitReason = "1D 翻轉"; open.pnl = ((cdl.c - open.entry) / open.entry) * 100; exited = true;
-            } else if (!open.isLong && smc1D.structure.includes("上升")) {
-              open.exit = cdl.c; open.exitReason = "1D 翻轉"; open.pnl = ((open.entry - cdl.c) / open.entry) * 100; exited = true;
-            }
-          }
-        }
-      }
-      if (!exited && i - open.entryIdx >= maxBars) {
-        open.exit = cdl.c; open.exitReason = "時間止損";
-        open.pnl = open.isLong ? ((cdl.c - open.entry) / open.entry) * 100 : ((open.entry - cdl.c) / open.entry) * 100;
-        exited = true;
-      }
-      if (exited) {
-        open.exitTime = cdl.t;
-        open.barsHeld = i - open.entryIdx;
-        trades.push(open);
-        open = null;
-      }
-    }
-
-    if (!open) {
-      const i1D = findIdx(c1D, cdl.t);
-      const i4H = findIdx(c4H, cdl.t);
-      if (i1D < 40 || i4H < 40) continue;
-
-      const smc1D = analyzeSMC(c1D.slice(0, i1D + 1));
-      if (!smc1D) continue;
-      const is1DUp = smc1D.structure.includes("上升");
-      const is1DDown = smc1D.structure.includes("下降");
-      if (!is1DUp && !is1DDown) continue;
-
-      const adx = adx4H[i4H];
-      if (adx == null || adx < 20) continue;
-
-      const smc4H = analyzeSMC(c4H.slice(0, i4H + 1));
-      if (!smc4H) continue;
-      const is4HUp = smc4H.structure.includes("上升") || smc4H.signal.includes("做多");
-      const is4HDown = smc4H.structure.includes("下降") || smc4H.signal.includes("做空");
-      if (is1DUp && !is4HUp) continue;
-      if (is1DDown && !is4HDown) continue;
-
-      const smc1H = analyzeSMC(c1H.slice(0, i + 1));
-      if (!smc1H || smc1H.confidence < minConfidence) continue;
-      const is1HLong = smc1H.signal.includes("做多");
-      const is1HShort = smc1H.signal.includes("做空");
-      if (is1DUp && !is1HLong) continue;
-      if (is1DDown && !is1HShort) continue;
-
-      const vol5 = c1H.slice(Math.max(0, i - 4), i + 1).reduce((s, x) => s + x.v, 0) / 5;
-      const vol20 = c1H.slice(Math.max(0, i - 19), i + 1).reduce((s, x) => s + x.v, 0) / 20;
-      if (vol20 > 0 && vol5 < vol20 * 0.7) continue;
-
-      const isLong = is1DUp;
-      const atr = atr4H[i4H] || (cdl.c * 0.01);
-      open = {
-        entryIdx: i, entryTime: cdl.t, entry: cdl.c,
-        isLong, signal: smc1H.signal, confidence: smc1H.confidence,
-        structure: smc1D.structure,
-        stop: isLong ? cdl.c - atr * atrMult : cdl.c + atr * atrMult,
-        target: isLong ? cdl.c + atr * targetMult : cdl.c - atr * targetMult,
-      };
-    }
-  }
-
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
-  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
-  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
-  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
-  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : (totalWin > 0 ? 99 : 0);
-
-  let cum = 0;
-  const equity = trades.map((t) => { cum += t.pnl; return { t: t.exitTime, cum }; });
-  let peak = 0, maxDD = 0;
-  equity.forEach((e) => {
-    if (e.cum > peak) peak = e.cum;
-    if (e.cum - peak < maxDD) maxDD = e.cum - peak;
-  });
-
-  return {
-    trades, equity,
-    stats: { total: trades.length, wins: wins.length, losses: losses.length, winRate, totalPnl, avgWin, avgLoss, profitFactor, maxDD },
-  };
-}
-
-// ═══════════ JIN10 FLASH ═══════════════════════════════════════════════════
-function extractJsonArray(txt) {
-  if (!txt) return null;
-  const start = txt.indexOf("[");
-  const end = txt.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) return null;
-  try { return JSON.parse(txt.slice(start, end + 1)); } catch { return null; }
-}
-
-export async function loadJin10Flash() {
-  const txt = await getText("https://www.jin10.com/flash_newest.js", { useProxy: true });
-  const rows = extractJsonArray(txt);
-  if (!Array.isArray(rows)) return null;
-  return rows.slice(0, 40).map((r) => {
-    const d = r.data || {};
-    const text = (d.content || d.title || r.content || "").replace(/<[^>]+>/g, "").trim();
-    return { time: r.time || "", text, important: !!(r.important || d.important) };
-  }).filter((x) => x.text);
-}
-
-export async function loadCalendar() { return null; }
-// ═══════════ 爆發掃描（多維度評分）═══════════════════════════════════════
-export async function scanExplosive(coins, top = 200) {
-  const cands = coins.slice(0, Math.min(top, coins.length));
-  const results = [];
-  for (let i = 0; i < cands.length; i += 8) {
-    const batch = cands.slice(i, i + 8);
-    const rows = await Promise.all(batch.map(async (coin) => {
+  // 警報掃描
+  useEffect(() => {
+    if (!coinsLoaded) return;
+    let cancel = false;
+    async function scan() {
+      if (cancel) return;
       try {
-        const [oiHist, klines1h, fundingData] = await Promise.all([
-          loadOIHist(coin, "5m", 5).catch(() => null),
-          loadKlines(coin, "1H").catch(() => null),
-          loadFundingRate(coin).catch(() => null),
-        ]);
-        return { coin, oiHist, klines1h, fundingData };
-      } catch { return { coin, oiHist: null, klines1h: null, fundingData: null }; }
-    }));
-    rows.forEach(({ coin, oiHist, klines1h, fundingData }) => {
-      let score = 0, direction = 0, oiChgPct = 0, fundingVal = 0;
-      const signals = [];
-      if (oiHist && oiHist.length >= 4) {
-        const oiNow = oiHist[oiHist.length - 1].oi;
-        const oiBase = oiHist.slice(0, -1).reduce((s, x) => s + x.oi, 0) / (oiHist.length - 1);
-        if (oiBase > 0) {
-          oiChgPct = (oiNow - oiBase) / oiBase * 100;
-          if (Math.abs(oiChgPct) > 5) {
-            score += 15;
-            signals.push(`OI ${oiChgPct > 0 ? "+" : ""}${oiChgPct.toFixed(1)}%`);
-            const pc = coin.change || 0;
-            if (oiChgPct > 0 && pc > 0) direction += 1;
-            else if (oiChgPct > 0 && pc < -1) direction -= 1;
-            else if (oiChgPct < 0 && pc > 1) direction += 0.5;
-            else if (oiChgPct < 0 && pc < 0) direction -= 0.5;
-          }
-        }
-      }
-      if (fundingData && fundingData.funding != null) {
-        fundingVal = fundingData.funding * 100;
-        if (fundingVal > 0.05) { score += 20; direction -= 1; signals.push(`Funding +${fundingVal.toFixed(3)}% 多頭過熱`); }
-        else if (fundingVal < -0.05) { score += 20; direction += 1; signals.push(`Funding ${fundingVal.toFixed(3)}% 空頭擠倉`); }
-      }
-      if (klines1h && klines1h.length >= 30) {
-        const closes = klines1h.map(c => c.c);
-        const vols = klines1h.map(c => c.v);
-        const n = closes.length - 1;
-        const getBBW = (ei) => {
-          if (ei < 19) return null;
-          const sl = closes.slice(ei - 19, ei + 1);
-          const m = sl.reduce((a, b) => a + b, 0) / 20;
-          const s = Math.sqrt(sl.reduce((v, x) => v + (x - m) ** 2, 0) / 20);
-          return m > 0 ? (s * 4) / m * 100 : null;
-        };
-        const curBBW = getBBW(n);
-        const histBBWs = [];
-        for (let j = n - 29; j < n; j++) { const w = getBBW(j); if (w != null) histBBWs.push(w); }
-        if (curBBW != null && histBBWs.length >= 10 && curBBW <= Math.min(...histBBWs) * 1.2) { score += 20; signals.push("布林帶擠壓"); }
-        const avgVol = vols.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
-        if (avgVol > 0) {
-          const vr = vols[n] / avgVol;
-          if (vr >= 2) { score += 10; signals.push(`量能 ×${vr.toFixed(1)}`); if (closes[n] > closes[n - 1]) direction += 0.5; else direction -= 0.5; }
-        }
-        const smcR = analyzeSMC(klines1h);
-        if (smcR) {
-          if (smcR.signal.includes("強力做多")) { score += 20; direction += 2; signals.push("SMC 強力做多"); }
-          else if (smcR.signal.includes("做多")) { score += 10; direction += 1; signals.push("SMC 做多"); }
-          else if (smcR.signal.includes("強力做空")) { score += 20; direction -= 2; signals.push("SMC 強力做空"); }
-          else if (smcR.signal.includes("做空")) { score += 10; direction -= 1; signals.push("SMC 做空"); }
-          if (smcR.snr) {
-            if (smcR.snr.support && smcR.snr.support.dist < 0.8) { score += 10; signals.push(`貼近支撐(${smcR.snr.support.dist.toFixed(2)}%)`); direction += 0.5; }
-            if (smcR.snr.resistance && smcR.snr.resistance.dist < 0.8) { score += 10; signals.push(`貼近壓力(${smcR.snr.resistance.dist.toFixed(2)}%)`); direction -= 0.5; }
-          }
-        }
-      }
-      if (score >= 25 && signals.length >= 2) {
-        results.push({ symbol: coin.symbol, name: coin.name, label: coin.label, price: coin.price, change: coin.change || 0, score: Math.min(score, 100), direction: direction >= 1 ? "long" : direction <= -1 ? "short" : "neutral", signals, oiChgPct, fundingVal, ts: Date.now(), binanceSymbol: coin.binanceSymbol, cat: "crypto" });
-      }
-    });
-    if (i + 8 < cands.length) await new Promise(r => setTimeout(r, 300));
-  }
-  return results.sort((a, b) => b.score - a.score).slice(0, 40);
-}
+        const a = await scanAnomalies(coins, 200);
+        if (cancel) return;
+        setAlerts((prev) => {
+          const map = new Map();
+          [...a, ...prev].forEach((x) => {
+            const key = `${x.symbol}-${x.type}`;
+            const ex = map.get(key);
+            if (!ex || x.ts > ex.ts) map.set(key, x);
+          });
+          return Array.from(map.values()).sort((x, y) => y.ts - x.ts).slice(0, 50);
+        });
+      } catch {}
+    }
+    scan();
+    const iv = setInterval(scan, 3 * 60 * 1000);
+    return () => { cancel = true; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coinsLoaded]);
 
-// ═══════════ SNR 支撐壓力位 ═══════════════════════════════════════════════
-// 用 swing high/low 群聚成關鍵價位，回傳最近的支撐/壓力
-export function calcSNR(candles, lookback = 100) {
-  if (!candles || candles.length < 30) return null;
-  const slice = candles.slice(-lookback);
-  const { sh, sl } = findSwings(slice, 3);
-  const price = slice[slice.length - 1].c;
+  // 爆發掃描（進分頁自動掃 + 每 5 分鐘自動刷新）
+  useEffect(() => {
+    if (sideTab !== "alerts" || alertSubTab !== "explosive" || !coinsLoaded) return;
+    let cancel = false;
+    async function run() {
+      if (cancel) return;
+      setExplosiveLoading(true);
+      try {
+        const r = await scanExplosive(coins, 200);
+        if (cancel) return;
+        setExplosive(r); setExplosiveTs(Date.now());
+      } catch {}
+      if (!cancel) setExplosiveLoading(false);
+    }
+    // 進入時若無資料或超過 5 分鐘就立刻掃
+    if (!explosive || Date.now() - explosiveTs >= 5 * 60 * 1000) run();
+    const iv = setInterval(run, 5 * 60 * 1000);
+    return () => { cancel = true; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sideTab, alertSubTab, coinsLoaded]);
 
-  // 群聚相近價位（容差 0.5%）
-  function cluster(points) {
-    const sorted = points.map(p => p.price).sort((a, b) => a - b);
-    const groups = [];
-    sorted.forEach(p => {
-      const g = groups.find(g => Math.abs(g.avg - p) / p < 0.005);
-      if (g) { g.prices.push(p); g.avg = g.prices.reduce((a, b) => a + b, 0) / g.prices.length; g.count++; }
-      else groups.push({ avg: p, prices: [p], count: 1 });
-    });
-    return groups.sort((a, b) => b.count - a.count);
+  // 多 AI 個別分析（5 個派系）
+  useEffect(() => {
+    if (!selected || !candles.length || !smc) return;
+    let cancel = false;
+    setMultiAILoading(true);
+    analyzeMultiAI(selected, candles, smc, smcMulti).then((r) => {
+      if (!cancel) { setMultiAI(r); setMultiAILoading(false); }
+    }).catch(() => { if (!cancel) setMultiAILoading(false); });
+    return () => { cancel = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, smc, smcMulti]);
+
+  async function enableNotif() {
+    if (typeof Notification === "undefined") { setNotifOn(true); return; }
+    try { const p = await Notification.requestPermission(); setNotifOn(true); if (p === "granted") new Notification("✅ 通知已開啟", { body: "SMC 多空訊號將即時通知你" }); } catch { setNotifOn(true); }
   }
 
-  const resGroups = cluster(sh).filter(g => g.avg > price);
-  const supGroups = cluster(sl).filter(g => g.avg < price);
+  const indData = (() => {
+    if (candles.length < 30) return null;
+    const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l), vols = candles.map((c) => c.v), n = closes.length - 1;
+    const rsi = calcRSI(closes), { macd, signal, hist } = calcMACD(closes), kdj = calcKDJ(highs, lows, closes);
+    return { rsi: rsi[n], macd: macd[n], signal: signal[n], hist: hist[n], kdj: kdj[n], ma5: calcSMA(closes, 5)[n], ma10: calcSMA(closes, 10)[n], ma20: calcSMA(closes, 20)[n], ma60: calcSMA(closes, 60)[n], curVol: vols[n], avgVol: vols.slice(-20).reduce((a, b) => a + b, 0) / 20 };
+  })();
 
-  const nearestRes = resGroups.sort((a, b) => a.avg - b.avg)[0] || null;
-  const nearestSup = supGroups.sort((a, b) => b.avg - a.avg)[0] || null;
-
-  const resDist = nearestRes ? ((nearestRes.avg - price) / price) * 100 : null;
-  const supDist = nearestSup ? ((price - nearestSup.avg) / price) * 100 : null;
-
-  return {
-    price,
-    resistance: nearestRes ? { price: nearestRes.avg, dist: resDist, strength: nearestRes.count } : null,
-    support: nearestSup ? { price: nearestSup.avg, dist: supDist, strength: nearestSup.count } : null,
-    // 全部關鍵位（給圖表/列表用）
-    allResistances: resGroups.slice(0, 3).map(g => ({ price: g.avg, strength: g.count })),
-    allSupports: supGroups.slice(0, 3).map(g => ({ price: g.avg, strength: g.count })),
+  const displayPrice = candles.length ? candles[candles.length - 1].c : (selected?.price || 0);
+  const change24h = selected ? (coins.find((c) => c.symbol === selected.symbol)?.change ?? selected.change ?? 0) : 0;
+  const up = change24h >= 0;
+  const fmtPr = (v) => (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+  const fmtVol = (v) => {
+    if (!v || v <= 0) return "";
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
+    return String(Math.round(v));
   };
+
+  return (
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", color: "#c9d1d9", fontFamily: "'Sora',system-ui,sans-serif", overflow: "hidden", background: "radial-gradient(ellipse 90% 55% at 18% -5%, rgba(247,147,26,0.10), transparent 60%), radial-gradient(ellipse 70% 50% at 85% 8%, rgba(98,126,234,0.10), transparent 55%), linear-gradient(180deg,#070c12 0%,#05080c 100%)" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2a3b52,#1a2535);border-radius:3px}
+::-webkit-scrollbar-track{background:transparent}
+button{cursor:pointer;outline:none;font-family:inherit}
+.mono{font-family:'JetBrains Mono',monospace}
+.glass{background:rgba(13,21,32,0.55);backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);border:1px solid rgba(255,255,255,0.07)}
+.glass-sub{background:rgba(10,17,26,0.5);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.coin-row{transition:background .18s ease,border-color .18s ease,transform .12s ease}
+.coin-row:hover{background:rgba(88,166,255,0.06)!important;transform:translateX(2px)}
+.tab-btn{transition:color .2s ease,background .2s ease}
+.lift{transition:transform .15s ease,box-shadow .2s ease}
+.lift:hover{transform:translateY(-1px)}
+@keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes glowPulse{0%,100%{box-shadow:0 0 24px -6px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.04)}50%{box-shadow:0 0 40px -4px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.08)}}
+@keyframes ringSpin{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--off)}}
+.signal-card{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite}
+.fade-in{animation:fadeUp .35s ease}`}</style>
+
+      {notif && (
+        <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, animation: "slideDown .35s ease-out", background: "#0d1520", border: `1.5px solid ${notif.color}`, color: notif.color, borderRadius: 12, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 30px rgba(0,0,0,.6)", maxWidth: "92vw" }}>
+          <div style={{ fontSize: 22 }}>{notif.signal.includes("做多") ? "📈" : "📉"}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", gap: 8 }}><span style={{ color: "#e6edf3", fontSize: 13, fontWeight: 700, fontFamily: "monospace" }}>{notif.symbol}</span><span style={{ color: notif.color, fontSize: 14, fontWeight: 800, fontFamily: "monospace" }}>{notif.signal}</span></div>
+            <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace" }}>SMC 訊號 · 信心 {notif.confidence}% · {new Date(notif.ts).toLocaleTimeString()}</div>
+          </div>
+          <button onClick={() => setNotif(null)} style={{ background: "transparent", border: "none", color: "#4a5568", fontSize: 18 }}>×</button>
+        </div>
+      )}
+
+      <div className="glass" style={{ borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "0 16px", display: "flex", alignItems: "center", height: 50, gap: 14, flexShrink: 0, position: "relative", zIndex: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 9, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, boxShadow: "0 0 18px -2px rgba(247,147,26,0.55)" }}>₿</div>
+          <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 3, color: "#e6edf3" }}>CRYPTEX</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginLeft: "auto" }}>
+          {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950", boxShadow: "0 0 8px #3fb950" }} />
+          <span className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>{status}</span>
+        </div>
+      </div>
+
+      {/* 手機版：商品列表 chips（橫向） */}
+      {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
+        <div style={{ padding: "6px 8px" }}>
+          <SearchInput key="search-box" value={search} onChange={setSearch} />
+        </div>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
+          {visibleList.map((coin) => {
+            const live = coins.find((c) => c.symbol === coin.symbol) || coin;
+            const active = selected?.symbol === coin.symbol;
+            return (
+              <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
+                <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
+                <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>}
+
+      <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden", minHeight: 0 }}>
+        {/* 桌面版：左側商品列表 */}
+        {!isMobile && <div style={{ width: 200, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+          <div style={{ padding: "8px" }}>
+            <SearchInput key="search-box" value={search} onChange={setSearch} />
+          </div>
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
+            {visibleList.map((coin) => {
+              const live = coins.find((c) => c.symbol === coin.symbol) || coin;
+              const active = selected?.symbol === coin.symbol;
+              return (
+                <button key={coin.symbol} className="coin-row" onClick={() => setSelected(live)} style={{ width: "100%", background: active ? "linear-gradient(90deg,rgba(88,166,255,0.12),transparent)" : "transparent", border: "none", borderLeft: `2px solid ${active ? "#58a6ff" : "transparent"}`, padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ color: active ? "#e6edf3" : "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.name}</div>
+                    <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{coin.label ? (coin.label).slice(0, 6) : ""}{fmtVol(live.volume) ? (coin.label ? " · " : "") + fmtVol(live.volume) : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
+                    <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(live.price)}</span>
+                    <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
+                  </div>
+                </button>
+              );
+            })}
+            {!search && filtered.length > visibleList.length && <button onClick={() => setListLimit((l) => l + 50)} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", color: "#58a6ff", padding: "8px", fontSize: 10, fontFamily: "monospace", cursor: "pointer" }}>載入更多 ({filtered.length - visibleList.length} 個)</button>}
+          </div>
+        </div>}
+
+        {/* 主分析區（無 K 線） */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+          {/* 價格 header */}
+          <div className="glass-sub" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "12px 16px", flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: up ? "#3dd9c4" : "#ff8a87" }}>${fmtPr(displayPrice)}</span>
+                <span className="mono" style={{ color: "#5a6b80", fontSize: 10 }}>{selected?.symbol} · 加密貨幣</span>
+              </div>
+              <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                <div className="mono" style={{ color: up ? "#26a69a" : "#ef5350", fontSize: 14, fontWeight: 700, textShadow: `0 0 14px ${up ? "#26a69a55" : "#ef535055"}` }}>{up ? "▲" : "▼"} {Math.abs(change24h).toFixed(2)}%</div>
+                <div className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>24h 變化</div>
+              </div>
+            </div>
+          </div>
+
+          {/* 多週期 bar */}
+          {periodChg && <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "5px 8px", display: "flex", alignItems: "center", flexShrink: 0, overflowX: "auto" }}>
+            {[["今日", periodChg.today], ["7天", periodChg.d7], ["30天", periodChg.d30], ["90天", periodChg.d90], ["180天", periodChg.d180], ["1年", periodChg.y1]].map(([lbl, val]) => (
+              <div key={lbl} style={{ flex: 1, minWidth: 52, textAlign: "center", padding: "0 4px" }}>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{lbl}</div>
+                <div style={{ color: val == null ? "#4a5568" : val >= 0 ? "#26a69a" : "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 600 }}>{val == null ? "—" : (val >= 0 ? "+" : "") + val.toFixed(2) + "%"}</div>
+              </div>
+            ))}
+          </div>}
+
+          {/* 時間框架（給分析用） */}
+          <div style={{ background: "#0a1218", borderBottom: "1px solid #1a2535", padding: "6px 14px", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>分析時間框架:</span>
+            {INTERVALS.map((iv) => (
+              <button key={iv} onClick={() => setTf(iv)} style={{ background: tf === iv ? "#0f1e2e" : "transparent", border: `1px solid ${tf === iv ? "#58a6ff" : "#1a2535"}`, borderRadius: 4, color: tf === iv ? "#58a6ff" : "#8b949e", padding: "3px 10px", fontSize: 10, fontFamily: "monospace" }}>{iv}</button>
+            ))}
+          </div>
+
+          {/* 分頁 */}
+          <div className="glass-sub" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, overflowX: "auto" }}>
+            {[["smc", "SMC"], ["ai", "AI 分析"], ["score", "評分卡"], ["journal", "交易紀錄"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
+              <button key={id} className="tab-btn" onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "linear-gradient(180deg,rgba(88,166,255,0.12),transparent)" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#5a6b80", padding: "11px 0", fontSize: 11, fontWeight: sideTab === id ? 700 : 500, fontFamily: "'Sora',sans-serif" }}>{label}</button>
+            ))}
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+            {/* SMC */}
+            {sideTab === "smc" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
+                <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{notifOn ? "✓ 已開啟" : "開啟通知"}</button>
+              </div>
+              {smc ? <>
+                <div className="signal-card" style={{ "--glow": `${smc.color}66`, background: `linear-gradient(145deg, ${smc.color}1f, rgba(13,21,32,0.6))`, border: `1px solid ${smc.color}88`, borderRadius: 16, padding: "18px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16 }}>
+                  <div style={{ position: "relative", width: 76, height: 76, flexShrink: 0 }}>
+                    <svg width="76" height="76" style={{ transform: "rotate(-90deg)" }}>
+                      <circle cx="38" cy="38" r="32" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
+                      <circle cx="38" cy="38" r="32" fill="none" stroke={smc.color} strokeWidth="6" strokeLinecap="round" strokeDasharray={2 * Math.PI * 32} strokeDashoffset={2 * Math.PI * 32 * (1 - (smc.confidence || 0) / 100)} style={{ transition: "stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)", filter: `drop-shadow(0 0 4px ${smc.color})` }} />
+                    </svg>
+                    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                      <span className="mono" style={{ color: smc.color, fontSize: 18, fontWeight: 700, lineHeight: 1 }}>{smc.confidence}</span>
+                      <span className="mono" style={{ color: "#5a6b80", fontSize: 8 }}>信心</span>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="mono" style={{ color: "#5a6b80", fontSize: 9, marginBottom: 5, letterSpacing: 1 }}>SMC 綜合訊號 · {selected?.symbol} · {tf}</div>
+                    <div style={{ color: smc.color, fontSize: 30, fontWeight: 800, fontFamily: "'Sora',sans-serif", letterSpacing: 1, lineHeight: 1, textShadow: `0 0 20px ${smc.color}55` }}>{smc.signal}</div>
+                  </div>
+                </div>
+                <Section title="多時區 SMC 結構" color="#26a69a" badge="MTF">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {smcMulti.map(({ tf: t, result: r }) => {
+                      const sig = r ? r.signal : "資料不足";
+                      const col = r ? r.color : "#4a5568";
+                      return (
+                        <div key={t} className="lift" style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: `linear-gradient(90deg, ${r ? col + "14" : "rgba(13,21,32,0.5)"}, rgba(13,21,32,0.3))`, borderRadius: 8, border: `1px solid ${r ? col + "44" : "rgba(255,255,255,0.05)"}` }}>
+                          <span className="mono" style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700, width: 36 }}>{t}</span>
+                          <span className="mono" style={{ color: col, fontSize: 11, fontWeight: 700, minWidth: 64 }}>{sig}</span>
+                          {r && <><span className="mono" style={{ flex: 1, color: "#5a6b80", fontSize: 9, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.structure}</span><span className="mono" style={{ color: col, fontSize: 9 }}>{r.confidence}%</span></>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Section>
+                <Section title="市場結構" color="#58a6ff">
+                  <IndRow label="當前結構" value={smc.structure} color={smc.structure.includes("上升") ? "#26a69a" : smc.structure.includes("下降") ? "#ef5350" : "#c9d1d9"} />
+                  <IndRow label="流動性掃單" value={smc.sweep || "無"} color={smc.sweep ? "#f0e68c" : "#4a5568"} />
+                  <IndRow label="FVG 失衡" value={smc.fvg ? (smc.fvg.type === "bull" ? "多頭缺口" : "空頭缺口") : "無"} color={smc.fvg ? (smc.fvg.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
+                  <IndRow label="訂單塊 OB" value={smc.ob ? (smc.ob.type === "bull" ? "多頭OB" : "空頭OB") : "無"} color={smc.ob ? (smc.ob.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
+                </Section>
+                {smc.snr && (smc.snr.support || smc.snr.resistance) && (
+                  <Section title="關鍵價位 SNR" color="#ffb300">
+                    {smc.snr.resistance && (
+                      <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #1a2535" }}>
+                        <span style={{ color: "#ef5350", fontSize: 11, fontFamily: "monospace" }}>📍 上方壓力</span>
+                        <span className="mono" style={{ color: "#ef5350", fontSize: 11, fontWeight: 700 }}>
+                          {smc.snr.resistance.price.toFixed(smc.snr.resistance.price > 1 ? 4 : 6)} (+{smc.snr.resistance.dist.toFixed(2)}%)
+                        </span>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0" }}>
+                      <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace" }}>現價</span>
+                      <span className="mono" style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>{smc.snr.price.toFixed(smc.snr.price > 1 ? 4 : 6)}</span>
+                    </div>
+                    {smc.snr.support && (
+                      <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #1a2535" }}>
+                        <span style={{ color: "#26a69a", fontSize: 11, fontFamily: "monospace" }}>📍 下方支撐</span>
+                        <span className="mono" style={{ color: "#26a69a", fontSize: 11, fontWeight: 700 }}>
+                          {smc.snr.support.price.toFixed(smc.snr.support.price > 1 ? 4 : 6)} (-{smc.snr.support.dist.toFixed(2)}%)
+                        </span>
+                      </div>
+                    )}
+                  </Section>
+                )}
+                <Section title="判斷依據" color="#f0e68c" defaultOpen={false}>
+                  {smc.reasons.length ? smc.reasons.map((r, i) => <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}><span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}</div>) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號，建議觀望。</div>}
+                </Section>
+              </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
+            </>}
+
+            {sideTab === "ai" && <>
+              {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
+              {multiAI && multiAI.length > 0 && (() => {
+                const consensus = multiAI[multiAI.length - 1];
+                return (
+                  <div style={{ background: `${consensus.color}14`, border: `1.5px solid ${consensus.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
+                    <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識 · {selected?.symbol}</div>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: consensus.color, fontFamily: "monospace" }}>{consensus.direction}</div>
+                    <div style={{ color: consensus.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>共識信心 {consensus.confidence}%</div>
+                  </div>
+                );
+              })()}
+              {multiAI && multiAI.length > 0 && <Section title="🤖 5 個 AI 派系觀點" color="#a78bfa" defaultOpen={true}>
+                <div style={{ color: "#4a5568", fontSize: 9, padding: "0 0 8px", lineHeight: 1.5 }}>點任一派系展開查看完整理由</div>
+                {multiAI.slice(0, -1).map((ai, i) => <AICard key={i} ai={ai} defaultOpen={false} />)}
+              </Section>}
+              {multiAI && multiAI.length > 0 && <Section title="🧠 整合共識詳情" color={multiAI[multiAI.length - 1].color} defaultOpen={true}>
+                <AICard ai={multiAI[multiAI.length - 1]} defaultOpen={true} />
+              </Section>}
+              <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.5, padding: "8px 4px" }}>
+                <p style={{ color: "#787b86", marginBottom: 4 }}>5 個 AI 派系：</p>
+                <p>· 🏃 <span style={{ color: "#26a69a" }}>趨勢跟隨</span>：MA 排列 + 多時區趨勢</p>
+                <p>· 🔁 <span style={{ color: "#f0b90b" }}>均值回歸</span>：RSI 極值 + KDJ 反轉</p>
+                <p>· 🏛️ <span style={{ color: "#58a6ff" }}>SMC 機構</span>：結構轉折 + FVG/OB/掃單</p>
+                <p>· 💰 <span style={{ color: "#a78bfa" }}>期貨情緒</span>：資金費率 + OI + 多空比</p>
+                <p>· 🧠 <span style={{ color: "#e040fb" }}>整合共識</span>：加權合併四派系結論</p>
+              </div>
+            </>}
+
+            {/* 評分卡 */}
+            {sideTab === "score" && (
+              <ScoreCard symbol={selected?.symbol} smc={smc} multiAI={multiAI} />
+            )}
+
+            {/* 交易紀錄 */}
+            {sideTab === "journal" && (
+              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} />
+            )}
+
+            {sideTab === "indicators" && indData && <>
+              <Section title="RSI (14)" color="#a78bfa">
+                <IndRow label="RSI 值" value={indData.rsi?.toFixed(2)} color={indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#c9d1d9"} />
+                <IndRow label="區間狀態" value={indData.rsi > 70 ? "超買 ⚠️" : indData.rsi < 30 ? "超賣 🟢" : "中性"} />
+                <div style={{ marginTop: 6, height: 3, borderRadius: 2, background: "#1a2535", overflow: "hidden" }}><div style={{ width: `${Math.min(100, indData.rsi || 0)}%`, height: "100%", background: indData.rsi > 70 ? "#ef5350" : indData.rsi < 30 ? "#26a69a" : "#a78bfa" }} /></div>
+              </Section>
+              <Section title="MACD (12,26,9)" color="#2962ff">
+                <IndRow label="MACD" value={indData.macd?.toFixed(4)} />
+                <IndRow label="Signal" value={indData.signal?.toFixed(4)} />
+                <IndRow label="Histogram" value={indData.hist?.toFixed(4)} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
+                <IndRow label="趨勢" value={(indData.hist || 0) > 0 ? "多頭 ↑" : "空頭 ↓"} color={(indData.hist || 0) > 0 ? "#26a69a" : "#ef5350"} />
+              </Section>
+              <Section title="KDJ (9,3,3)" color="#ffb300">
+                <IndRow label="K" value={indData.kdj?.k?.toFixed(2)} color="#ffb300" />
+                <IndRow label="D" value={indData.kdj?.d?.toFixed(2)} color="#2962ff" />
+                <IndRow label="J" value={indData.kdj?.j?.toFixed(2)} color="#e040fb" />
+                <IndRow label="信號" value={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "金叉 🟢" : "死叉 🔴"} color={(indData.kdj?.k || 0) > (indData.kdj?.d || 0) ? "#26a69a" : "#ef5350"} />
+              </Section>
+              <Section title="移動平均線 MA" color="#f0e68c">
+                {[[5, "#f0e68c"], [10, "#87ceeb"], [20, "#ff8c69"], [60, "#da70d6"]].map(([p, col]) => <IndRow key={p} label={`MA${p}`} value={indData[`ma${p}`]?.toFixed(p <= 10 ? 4 : 2)} color={col} />)}
+                <IndRow label="多空排列" value={(indData.ma5 || 0) > (indData.ma20 || 0) ? "多頭 ↑" : "空頭 ↓"} color={(indData.ma5 || 0) > (indData.ma20 || 0) ? "#26a69a" : "#ef5350"} />
+              </Section>
+            </>}
+
+            {/* 推薦 */}
+            {sideTab === "recs" && <>
+              <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>掃前 200 大幣 · SMC 評分</div>
+                </div>
+                <button onClick={() => setRecsTs(0)} disabled={recsLoading} style={{ background: recsLoading ? "#1a2535" : "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: recsLoading ? 0.5 : 1 }}>{recsLoading ? "掃描中..." : "↻ 刷新"}</button>
+              </div>
+              {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 10-15 秒...</div>}
+              {recs && <>
+                <Section title={`🟢 適合做多 (${recs.longs.length})`} color="#26a69a">
+                  {recs.longs.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做多訊號</div>}
+                  {recs.longs.map((r) => (
+                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                      <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
+                      <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
+                      <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
+                    </button>
+                  ))}
+                </Section>
+                <Section title={`🔴 適合做空 (${recs.shorts.length})`} color="#ef5350">
+                  {recs.shorts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做空訊號</div>}
+                  {recs.shorts.map((r) => (
+                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                      <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
+                      <div style={{ flex: 1, minWidth: 40 }}>
+                        <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                      </div>
+                      <span style={{ color: "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
+                      <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
+                    </button>
+                  ))}
+                </Section>
+                <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>已掃 {recs.scanned} / {recs.total} 幣 · {new Date(recsTs).toLocaleTimeString()}</div>
+              </>}
+            </>}
+
+            {/* 警報 */}
+            {sideTab === "alerts" && <>
+              {/* 子標籤 */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                {[["alerts", "⚡ 警報"], ["explosive", "🚀 爆發掃描"]].map(([id, label]) => (
+                  <button key={id} onClick={() => setAlertSubTab(id)} style={{ flex: 1, background: alertSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${alertSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: alertSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                ))}
+              </div>
+
+              {/* 警報子頁 */}
+              {alertSubTab === "alerts" && <>
+                <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>持倉異常警報</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘掃前 200 大幣 OI 變化</div>
+                </div>
+                <Section title={`警報事件 (${alerts.length})`} color="#f0b90b" badge="即時">
+                  {alerts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>目前無異常，每 3 分鐘自動掃描...</div>}
+                  {alerts.map((al, i) => (
+                    <button key={`${al.symbol}-${al.ts}-${i}`} onClick={() => { const c = coins.find((x) => x.symbol === al.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${al.color}44`, borderLeft: `3px solid ${al.color}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                          <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{al.name}</span>
+                          <span style={{ color: al.color, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{al.type}</span>
+                        </div>
+                        <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>
+                          OI {al.oiChgPct > 0 ? "+" : ""}{al.oiChgPct.toFixed(2)}% · 24h 價 {al.change > 0 ? "+" : ""}{al.change.toFixed(2)}% · {new Date(al.ts).toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </Section>
+                <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
+                  <p style={{ color: "#787b86", marginBottom: 4 }}>判讀說明：</p>
+                  <p>· <span style={{ color: "#26a69a" }}>多頭觸發</span>：OI 暴增 + 價漲</p>
+                  <p>· <span style={{ color: "#ef5350" }}>空頭觸發</span>：OI 暴增 + 價跌</p>
+                  <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌</p>
+                  <p>· <span style={{ color: "#f0b90b" }}>疑似反轉</span>：OI 減 + 價升</p>
+                </div>
+              </>}
+
+              {/* 爆發掃描子頁 */}
+              {alertSubTab === "explosive" && <>
+                <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🚀 即將爆發幣種掃描</div>
+                    <div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動掃描 · OI+Funding+布林帶+量能+SMC+SNR</div>
+                  </div>
+                  <button onClick={() => setExplosiveTs(0)} disabled={explosiveLoading} style={{ background: explosiveLoading ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: explosiveLoading ? 0.5 : 1 }}>{explosiveLoading ? "掃描中..." : "↻ 刷新"}</button>
+                </div>
+                {explosiveLoading && !explosive && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描 200 大幣，約 20-30 秒...</div>}
+                {explosive && <>
+                  {[["long", "🟢 多頭爆發候選", "#26a69a"], ["short", "🔴 空頭爆發候選", "#ef5350"], ["neutral", "⚡ 能量蓄積中（方向待定）", "#f0b90b"]].map(([dir, title, col]) => {
+                    const items = explosive.filter(x => x.direction === dir);
+                    if (items.length === 0) return null;
+                    return (
+                      <Section key={dir} title={`${title} (${items.length})`} color={col} defaultOpen={dir !== "neutral"}>
+                        {items.map((ex) => (
+                          <button key={ex.symbol} onClick={() => { const c = coins.find(x => x.symbol === ex.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${col}33`, borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                                <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ex.name}</span>
+                                <span style={{ color: ex.change >= 0 ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>{ex.change >= 0 ? "+" : ""}{ex.change.toFixed(2)}%</span>
+                                <span style={{ marginLeft: "auto", background: col, color: "#000", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 6px", borderRadius: 3 }}>{ex.score}分</span>
+                              </div>
+                              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                {ex.signals.map((s, si) => (
+                                  <span key={si} style={{ background: "#1a2535", color: "#8b949e", fontSize: 8, fontFamily: "monospace", padding: "1px 5px", borderRadius: 3 }}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </Section>
+                    );
+                  })}
+                  <div style={{ color: "#4a5568", fontSize: 9, textAlign: "center", padding: "4px" }}>掃描 200 幣 · {new Date(explosiveTs).toLocaleTimeString()}</div>
+                </>}
+                {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>準備自動掃描中...</div>}
+                <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
+                  <p style={{ color: "#787b86", marginBottom: 4 }}>評分說明（滿分 100）：</p>
+                  <p>· OI 暴增 >5% → +15</p>
+                  <p>· Funding 極值 → +20</p>
+                  <p>· 布林帶擠壓（能量蓄積）→ +20</p>
+                  <p>· 成交量暴增 2 倍以上 → +10</p>
+                  <p>· SMC 方向確認 → +10~20</p>
+                  <p>· 貼近SNR支撐/壓力 → +10</p>
+                </div>
+              </>}
+            </>}
+
+            {/* 金十 */}
+            {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
+              <FeedState state={j10flash}>
+                {Array.isArray(j10flash) && j10flash.map((n, i) => (
+                  <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
+                    <div style={{ display: "flex", gap: 7 }}>
+                      <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
+                      <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
+                    </div>
+                  </div>
+                ))}
+              </FeedState>
+            </Section>}
+
+            {/* 說明 */}
+            {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
+              <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📡 資料來源</p>
+              <p>加密貨幣：Binance + OKX + CoinGecko 合併（幾百個幣）</p>
+              <p>期貨資料：Binance Futures（資金費率/OI/多空比/Taker CVD）</p>
+              <p>K 線：Binance WebSocket 即時</p>
+              <p>財經訊息：金十數據</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 5 個 AI 派系</p>
+              <p>🏃 趨勢跟隨 | 🔁 均值回歸 | 🏛️ SMC 機構 | 💰 期貨情緒 | 🧠 整合共識</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 評分卡 / 交易紀錄</p>
+              <p>評分卡：整合市場動能、資金費率、多空情緒、相對強弱、SNR關鍵價位</p>
+              <p>交易紀錄：本機儲存進場/止損/止盈，自動追蹤即時盈虧與TP達成狀態</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
+              <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
+              <p>每 5 分鐘掃 200 大幣推薦清單；每 3 分鐘掃 OI 異常警報。</p>
+            </div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
