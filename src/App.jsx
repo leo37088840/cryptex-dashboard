@@ -89,6 +89,353 @@ function AICard({ ai, defaultOpen = false }) {
   );
 }
 
+// ═══════════ 評分卡（綜合多空評分） ═══════════════════════════════════════
+function ScoreBadge({ label, value, color }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 6 }}>
+      <span style={{ color: "#8b949e", fontSize: 11, fontFamily: "monospace" }}>{label}</span>
+      <span style={{ background: `${color}22`, color, fontSize: 10, fontFamily: "monospace", fontWeight: 700, padding: "2px 8px", borderRadius: 5, border: `1px solid ${color}55` }}>{value}</span>
+    </div>
+  );
+}
+
+function ScoreCard({ symbol, smc, multiAI }) {
+  if (!smc) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>分析中...</div>;
+
+  const consensus = multiAI && multiAI.length > 0 ? multiAI[multiAI.length - 1] : null;
+  const futuresAI = multiAI && multiAI.length > 0 ? multiAI[3] : null; // 期貨情緒派
+
+  // 市場動能：來自 SMC 結構
+  const momentumLabel = smc.structure.includes("上升") ? "買方主導" : smc.structure.includes("下降") ? "賣方主導" : "盤整";
+  const momentumColor = smc.structure.includes("上升") ? "#26a69a" : smc.structure.includes("下降") ? "#ef5350" : "#f0b90b";
+
+  // 資金費率（從期貨情緒派理由中找）
+  let fundingLabel = "中性", fundingColor = "#f0b90b", fundingDesc = "暫無資料";
+  if (futuresAI) {
+    const fr = futuresAI.reasons.find(r => r.includes("資金費率"));
+    if (fr) {
+      fundingDesc = fr;
+      if (fr.includes("多頭擁擠")) { fundingLabel = "偏空"; fundingColor = "#ef5350"; }
+      else if (fr.includes("空頭擁擠")) { fundingLabel = "偏多"; fundingColor = "#26a69a"; }
+    }
+  }
+
+  // 散戶情緒
+  let sentimentLabel = "中性", sentimentColor = "#f0b90b", sentimentDesc = "暫無資料";
+  if (futuresAI) {
+    const sr = futuresAI.reasons.find(r => r.includes("散戶") || r.includes("大戶"));
+    if (sr) {
+      sentimentDesc = sr;
+      if (sr.includes("反指標利多") || sr.includes("大戶看多")) { sentimentLabel = "偏多"; sentimentColor = "#26a69a"; }
+      else if (sr.includes("反指標利空") || sr.includes("大戶看空")) { sentimentLabel = "偏空"; sentimentColor = "#ef5350"; }
+    }
+  }
+
+  // 相對強弱（vs BTC）
+  let rsLabel = "同步", rsColor = "#f0b90b", rsDesc = "暫無資料";
+  const aiDeep = consensus; // 整合派理由可能含 vs BTC，但目前 multiAI 沒有；用 smc reasons fallback
+  const rsReason = (smc.reasons || []).find(r => r.includes("vs BTC") || r.includes("強勢") || r.includes("弱勢"));
+  if (rsReason) {
+    rsDesc = rsReason;
+    if (rsReason.includes("強勢")) { rsLabel = "強於BTC"; rsColor = "#26a69a"; }
+    else if (rsReason.includes("弱勢")) { rsLabel = "弱於BTC"; rsColor = "#ef5350"; }
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ background: `${smc.color}14`, border: `1.5px solid ${smc.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
+        <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>📊 綜合評分卡 · {symbol}</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: smc.color, fontFamily: "monospace" }}>{smc.signal}</div>
+        <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>信心度 {smc.confidence}%</div>
+      </div>
+
+      <Section title="做多/做空依據" color={smc.color} defaultOpen={true}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div>
+            <ScoreBadge label="市場動能" value={momentumLabel} color={momentumColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{smc.structure}</div>
+          </div>
+          <div>
+            <ScoreBadge label="資金費率" value={fundingLabel} color={fundingColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{fundingDesc}</div>
+          </div>
+          <div>
+            <ScoreBadge label="散戶/大戶情緒" value={sentimentLabel} color={sentimentColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{sentimentDesc}</div>
+          </div>
+          <div>
+            <ScoreBadge label="相對強弱" value={rsLabel} color={rsColor} />
+            <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{rsDesc}</div>
+          </div>
+          {smc.snr && (smc.snr.support || smc.snr.resistance) && (
+            <div>
+              <ScoreBadge label="關鍵價位 SNR" value={
+                smc.snr.support && smc.snr.support.dist < 1 ? "近支撐"
+                : smc.snr.resistance && smc.snr.resistance.dist < 1 ? "近壓力"
+                : "區間中"
+              } color={
+                smc.snr.support && smc.snr.support.dist < 1 ? "#26a69a"
+                : smc.snr.resistance && smc.snr.resistance.dist < 1 ? "#ef5350"
+                : "#f0b90b"
+              } />
+              <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>
+                {smc.snr.resistance ? `壓力 ${smc.snr.resistance.price.toFixed(smc.snr.resistance.price > 1 ? 4 : 6)} (+${smc.snr.resistance.dist.toFixed(2)}%)` : "—"}
+                {" · "}
+                {smc.snr.support ? `支撐 ${smc.snr.support.price.toFixed(smc.snr.support.price > 1 ? 4 : 6)} (-${smc.snr.support.dist.toFixed(2)}%)` : "—"}
+              </div>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      <Section title="評分依據" color="#a78bfa" defaultOpen={false}>
+        {smc.reasons.length ? smc.reasons.map((r, i) => (
+          <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}>
+            <span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}
+          </div>
+        )) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號。</div>}
+        {consensus && (
+          <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0", borderTop: "1px solid #1a2535", marginTop: 6, paddingTop: 8 }}>
+            <span style={{ color: "#a78bfa" }}>🧠 AI 共識：</span>{consensus.direction} ({consensus.confidence}%)
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+// ═══════════ 交易紀錄卡 ═══════════════════════════════════════════════════
+const TRADES_KEY = "cryptex_trades_v1";
+
+function loadTrades() {
+  try {
+    const raw = localStorage.getItem(TRADES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+function saveTrades(trades) {
+  try { localStorage.setItem(TRADES_KEY, JSON.stringify(trades)); } catch {}
+}
+
+function TradeForm({ onAdd, onCancel, defaultSymbol }) {
+  const [symbol, setSymbol] = useState(defaultSymbol || "");
+  const [direction, setDirection] = useState("long");
+  const [entry, setEntry] = useState("");
+  const [sl, setSl] = useState("");
+  const [tp1, setTp1] = useState("");
+  const [tp2, setTp2] = useState("");
+  const [tp3, setTp3] = useState("");
+
+  const inputStyle = { width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "7px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" };
+  const labelStyle = { color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginBottom: 3, display: "block" };
+
+  function submit() {
+    const e = parseFloat(entry), s = parseFloat(sl);
+    if (!symbol || !e || !s) return;
+    const trade = {
+      id: Date.now(),
+      symbol: symbol.toUpperCase(),
+      direction,
+      entry: e,
+      sl: s,
+      tp1: parseFloat(tp1) || null,
+      tp2: parseFloat(tp2) || null,
+      tp3: parseFloat(tp3) || null,
+      ts: Date.now(),
+      status: "open",
+    };
+    onAdd(trade);
+  }
+
+  return (
+    <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>幣種</label>
+          <input style={inputStyle} value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="例: BTC-USDT" />
+        </div>
+        <div style={{ width: 90 }}>
+          <label style={labelStyle}>方向</label>
+          <select style={inputStyle} value={direction} onChange={(e) => setDirection(e.target.value)}>
+            <option value="long">做多</option>
+            <option value="short">做空</option>
+          </select>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>進場價</label>
+          <input style={inputStyle} value={entry} onChange={(e) => setEntry(e.target.value)} placeholder="0.00" inputMode="decimal" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>SL 止損</label>
+          <input style={inputStyle} value={sl} onChange={(e) => setSl(e.target.value)} placeholder="0.00" inputMode="decimal" />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>TP1</label>
+          <input style={inputStyle} value={tp1} onChange={(e) => setTp1(e.target.value)} placeholder="選填" inputMode="decimal" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>TP2</label>
+          <input style={inputStyle} value={tp2} onChange={(e) => setTp2(e.target.value)} placeholder="選填" inputMode="decimal" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>TP3</label>
+          <input style={inputStyle} value={tp3} onChange={(e) => setTp3(e.target.value)} placeholder="選填" inputMode="decimal" />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={submit} style={{ flex: 1, background: "#26a69a", border: "none", borderRadius: 6, color: "#fff", padding: "8px 0", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>新增紀錄</button>
+        <button onClick={onCancel} style={{ flex: 1, background: "#1a2535", border: "none", borderRadius: 6, color: "#8b949e", padding: "8px 0", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>取消</button>
+      </div>
+    </div>
+  );
+}
+
+function TradeCard({ trade, livePrice, onDelete, onClose }) {
+  const isLong = trade.direction === "long";
+  const dirColor = isLong ? "#26a69a" : "#ef5350";
+  const dirLabel = isLong ? "做多" : "做空";
+
+  let pnlPct = null;
+  if (livePrice && trade.entry) {
+    pnlPct = isLong ? ((livePrice - trade.entry) / trade.entry) * 100 : ((trade.entry - livePrice) / trade.entry) * 100;
+  }
+
+  // 判斷 TP 達成狀態
+  function tpHit(tp) {
+    if (!tp || !livePrice) return false;
+    return isLong ? livePrice >= tp : livePrice <= tp;
+  }
+  function slHit() {
+    if (!livePrice) return false;
+    return isLong ? livePrice <= trade.sl : livePrice >= trade.sl;
+  }
+
+  const fmt = (v) => v == null ? "—" : (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+
+  const tps = [
+    ["TP1", trade.tp1],
+    ["TP2", trade.tp2],
+    ["TP3", trade.tp3],
+  ].filter(([, v]) => v != null);
+
+  let statusBadge = null;
+  if (trade.status === "closed") statusBadge = { label: "已平倉", color: "#5a6b80" };
+  else if (slHit()) statusBadge = { label: "觸及SL", color: "#ef5350" };
+  else {
+    const hitTps = tps.filter(([, v]) => tpHit(v));
+    if (hitTps.length > 0) statusBadge = { label: `${hitTps[hitTps.length - 1][0]} 達成`, color: "#26a69a" };
+  }
+
+  return (
+    <div style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{trade.symbol}</span>
+        <span style={{ color: dirColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700, background: `${dirColor}1a`, padding: "1px 6px", borderRadius: 4 }}>{dirLabel}</span>
+        {statusBadge && <span style={{ color: statusBadge.color, fontSize: 9, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${statusBadge.color}`, padding: "1px 6px", borderRadius: 4 }}>{statusBadge.label}</span>}
+        <span style={{ marginLeft: "auto", color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{new Date(trade.ts).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+      </div>
+
+      {pnlPct != null && (
+        <div style={{ textAlign: "center", padding: "6px 0", marginBottom: 6, background: pnlPct >= 0 ? "#26a69a14" : "#ef535014", borderRadius: 6 }}>
+          <span className="mono" style={{ color: pnlPct >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
+          <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginLeft: 6 }}>未實現盈虧 · 現價 {fmt(livePrice)}</span>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10, fontFamily: "monospace" }}>
+        <div style={{ background: "#0a1218", borderRadius: 5, padding: "5px 8px" }}>
+          <div style={{ color: "#5a6b80", fontSize: 9 }}>進場價</div>
+          <div style={{ color: "#c9d1d9", fontWeight: 700 }}>{fmt(trade.entry)}</div>
+        </div>
+        <div style={{ background: slHit() ? "#ef535022" : "#0a1218", borderRadius: 5, padding: "5px 8px", border: slHit() ? "1px solid #ef5350" : "none" }}>
+          <div style={{ color: "#ef5350", fontSize: 9 }}>SL</div>
+          <div style={{ color: "#ef5350", fontWeight: 700 }}>{fmt(trade.sl)}</div>
+        </div>
+        {tps.map(([label, val]) => (
+          <div key={label} style={{ background: tpHit(val) ? "#26a69a22" : "#0a1218", borderRadius: 5, padding: "5px 8px", border: tpHit(val) ? "1px solid #26a69a" : "none" }}>
+            <div style={{ color: "#26a69a", fontSize: 9 }}>{label} {tpHit(val) ? "✓" : ""}</div>
+            <div style={{ color: "#26a69a", fontWeight: 700 }}>{fmt(val)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        {trade.status !== "closed" && (
+          <button onClick={() => onClose(trade.id)} style={{ flex: 1, background: "#1a2535", border: "none", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>標記平倉</button>
+        )}
+        <button onClick={() => onDelete(trade.id)} style={{ flex: 1, background: "#1a2535", border: "none", borderRadius: 5, color: "#ef5350", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>刪除</button>
+      </div>
+    </div>
+  );
+}
+
+function TradeJournal({ coins, defaultSymbol }) {
+  const [trades, setTrades] = useState(() => loadTrades());
+  const [showForm, setShowForm] = useState(false);
+  const [livePrices, setLivePrices] = useState({});
+
+  useEffect(() => { saveTrades(trades); }, [trades]);
+
+  // 抓開倉中交易的即時價格（用 coins 列表的價格，每次 coins 更新時刷新）
+  useEffect(() => {
+    if (!coins || !coins.length) return;
+    const map = {};
+    trades.forEach((t) => {
+      if (t.status === "closed") return;
+      const c = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""));
+      if (c) map[t.symbol] = c.price;
+    });
+    setLivePrices((prev) => ({ ...prev, ...map }));
+  }, [coins, trades]);
+
+  function addTrade(trade) {
+    setTrades((prev) => [trade, ...prev]);
+    setShowForm(false);
+  }
+  function deleteTrade(id) {
+    setTrades((prev) => prev.filter((t) => t.id !== id));
+  }
+  function closeTrade(id) {
+    setTrades((prev) => prev.map((t) => t.id === id ? { ...t, status: "closed" } : t));
+  }
+
+  const openTrades = trades.filter((t) => t.status !== "closed");
+  const closedTrades = trades.filter((t) => t.status === "closed");
+
+  return (
+    <>
+      <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>交易紀錄</div>
+          <div style={{ color: "#4a5568", fontSize: 9 }}>本機儲存 · 自動追蹤TP/SL進度</div>
+        </div>
+        <button onClick={() => setShowForm((s) => !s)} style={{ background: "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{showForm ? "收起" : "+ 新增"}</button>
+      </div>
+
+      {showForm && <TradeForm onAdd={addTrade} onCancel={() => setShowForm(false)} defaultSymbol={defaultSymbol} />}
+
+      <Section title={`持倉中 (${openTrades.length})`} color="#58a6ff" defaultOpen={true}>
+        {openTrades.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>尚無持倉紀錄</div>}
+        {openTrades.map((t) => (
+          <TradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onDelete={deleteTrade} onClose={closeTrade} />
+        ))}
+      </Section>
+
+      {closedTrades.length > 0 && (
+        <Section title={`已平倉 (${closedTrades.length})`} color="#5a6b80" defaultOpen={false}>
+          {closedTrades.map((t) => (
+            <TradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onDelete={deleteTrade} onClose={closeTrade} />
+          ))}
+        </Section>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
@@ -288,7 +635,7 @@ export default function App() {
 
   // 多 AI 個別分析（5 個派系）
   useEffect(() => {
-    if (sideTab !== "ai" || !selected || !candles.length || !smc) return;
+    if (!selected || !candles.length || !smc) return;
     let cancel = false;
     setMultiAILoading(true);
     analyzeMultiAI(selected, candles, smc, smcMulti).then((r) => {
@@ -296,7 +643,7 @@ export default function App() {
     }).catch(() => { if (!cancel) setMultiAILoading(false); });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sideTab, selected, smc, smcMulti]);
+  }, [selected, smc, smcMulti]);
 
   async function enableNotif() {
     if (typeof Notification === "undefined") { setNotifOn(true); return; }
@@ -451,7 +798,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
 
           {/* 分頁 */}
           <div className="glass-sub" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, overflowX: "auto" }}>
-            {[["smc", "SMC"], ["ai", "AI 分析"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
+            {[["smc", "SMC"], ["ai", "AI 分析"], ["score", "評分卡"], ["journal", "交易紀錄"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
               <button key={id} className="tab-btn" onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "linear-gradient(180deg,rgba(88,166,255,0.12),transparent)" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#5a6b80", padding: "11px 0", fontSize: 11, fontWeight: sideTab === id ? 700 : 500, fontFamily: "'Sora',sans-serif" }}>{label}</button>
             ))}
           </div>
@@ -501,13 +848,35 @@ button{cursor:pointer;outline:none;font-family:inherit}
                   <IndRow label="FVG 失衡" value={smc.fvg ? (smc.fvg.type === "bull" ? "多頭缺口" : "空頭缺口") : "無"} color={smc.fvg ? (smc.fvg.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
                   <IndRow label="訂單塊 OB" value={smc.ob ? (smc.ob.type === "bull" ? "多頭OB" : "空頭OB") : "無"} color={smc.ob ? (smc.ob.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
                 </Section>
+                {smc.snr && (smc.snr.support || smc.snr.resistance) && (
+                  <Section title="關鍵價位 SNR" color="#ffb300">
+                    {smc.snr.resistance && (
+                      <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #1a2535" }}>
+                        <span style={{ color: "#ef5350", fontSize: 11, fontFamily: "monospace" }}>📍 上方壓力</span>
+                        <span className="mono" style={{ color: "#ef5350", fontSize: 11, fontWeight: 700 }}>
+                          {smc.snr.resistance.price.toFixed(smc.snr.resistance.price > 1 ? 4 : 6)} (+{smc.snr.resistance.dist.toFixed(2)}%)
+                        </span>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0" }}>
+                      <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace" }}>現價</span>
+                      <span className="mono" style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>{smc.snr.price.toFixed(smc.snr.price > 1 ? 4 : 6)}</span>
+                    </div>
+                    {smc.snr.support && (
+                      <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #1a2535" }}>
+                        <span style={{ color: "#26a69a", fontSize: 11, fontFamily: "monospace" }}>📍 下方支撐</span>
+                        <span className="mono" style={{ color: "#26a69a", fontSize: 11, fontWeight: 700 }}>
+                          {smc.snr.support.price.toFixed(smc.snr.support.price > 1 ? 4 : 6)} (-{smc.snr.support.dist.toFixed(2)}%)
+                        </span>
+                      </div>
+                    )}
+                  </Section>
+                )}
                 <Section title="判斷依據" color="#f0e68c" defaultOpen={false}>
                   {smc.reasons.length ? smc.reasons.map((r, i) => <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}><span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}</div>) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號，建議觀望。</div>}
                 </Section>
               </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
             </>}
-
-
 
             {sideTab === "ai" && <>
               {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
@@ -537,6 +906,16 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 <p>· 🧠 <span style={{ color: "#e040fb" }}>整合共識</span>：加權合併四派系結論</p>
               </div>
             </>}
+
+            {/* 評分卡 */}
+            {sideTab === "score" && (
+              <ScoreCard symbol={selected?.symbol} smc={smc} multiAI={multiAI} />
+            )}
+
+            {/* 交易紀錄 */}
+            {sideTab === "journal" && (
+              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} />
+            )}
 
             {sideTab === "indicators" && indData && <>
               <Section title="RSI (14)" color="#a78bfa">
@@ -650,7 +1029,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div>
                     <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🚀 即將爆發幣種掃描</div>
-                    <div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動掃描 · OI+Funding+布林帶+量能+SMC</div>
+                    <div style={{ color: "#4a5568", fontSize: 9 }}>每 5 分鐘自動掃描 · OI+Funding+布林帶+量能+SMC+SNR</div>
                   </div>
                   <button onClick={() => setExplosiveTs(0)} disabled={explosiveLoading} style={{ background: explosiveLoading ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: explosiveLoading ? 0.5 : 1 }}>{explosiveLoading ? "掃描中..." : "↻ 刷新"}</button>
                 </div>
@@ -690,10 +1069,10 @@ button{cursor:pointer;outline:none;font-family:inherit}
                   <p>· 布林帶擠壓（能量蓄積）→ +20</p>
                   <p>· 成交量暴增 2 倍以上 → +10</p>
                   <p>· SMC 方向確認 → +10~20</p>
+                  <p>· 貼近SNR支撐/壓力 → +10</p>
                 </div>
               </>}
             </>}
-
 
             {/* 金十 */}
             {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
@@ -718,6 +1097,9 @@ button{cursor:pointer;outline:none;font-family:inherit}
               <p>財經訊息：金十數據</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>🤖 5 個 AI 派系</p>
               <p>🏃 趨勢跟隨 | 🔁 均值回歸 | 🏛️ SMC 機構 | 💰 期貨情緒 | 🧠 整合共識</p>
+              <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 評分卡 / 交易紀錄</p>
+              <p>評分卡：整合市場動能、資金費率、多空情緒、相對強弱、SNR關鍵價位</p>
+              <p>交易紀錄：本機儲存進場/止損/止盈，自動追蹤即時盈虧與TP達成狀態</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>📊 高勝率回測</p>
               <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
@@ -729,4 +1111,3 @@ button{cursor:pointer;outline:none;font-family:inherit}
     </div>
   );
 }
-
