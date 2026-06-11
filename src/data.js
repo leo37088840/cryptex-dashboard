@@ -1231,3 +1231,118 @@ export function calcSNR(candles, lookback = 100) {
     allSupports: supGroups.slice(0, 3).map(g => ({ price: g.avg, strength: g.count })),
   };
 }
+
+// ═══════════ 自動推薦單掃描（綜合 SMC + AI共識 + 爆發評分）═══════════════════
+// 第一階段：快速掃描全部幣，用 SMC 信心度+結構+SNR 算初步分數
+// 第二階段：對前 15+15 名做完整 AI 共識分析，精選做多/做空各 perSide 名
+// 回傳含進場/SL/TP1-3 的建議單
+export async function scanAutoTrades(coins, top = 99999, perSide = 5) {
+  const cands = coins.slice(0, Math.min(top, coins.length));
+  const stage1 = [];
+
+  // 第一階段：快速 SMC 評分
+  for (let i = 0; i < cands.length; i += 15) {
+    const batch = cands.slice(i, i + 15);
+    const ks = await Promise.all(batch.map(c => klinesBinance(c, "1H").catch(() => null)));
+    batch.forEach((coin, j) => {
+      const k = ks[j];
+      if (!k || k.length < 40) return;
+      const smc = analyzeSMC(k);
+      if (!smc) return;
+      const isLong = smc.signal.includes("做多");
+      const isShort = smc.signal.includes("做空");
+      if (!isLong && !isShort) return;
+      stage1.push({ coin, candles: k, smc, isLong, quickScore: smc.confidence });
+    });
+    if (i + 15 < cands.length) await new Promise(r => setTimeout(r, 150));
+  }
+
+  // 取初步分數最高的前 15 名做多 + 15 名做空，進入第二階段
+  const longCands = stage1.filter(x => x.isLong).sort((a, b) => b.quickScore - a.quickScore).slice(0, 15);
+  const shortCands = stage1.filter(x => x.isShort).sort((a, b) => b.quickScore - a.quickScore).slice(0, 15);
+  const stage2Cands = [...longCands, ...shortCands];
+
+  const refined = [];
+  for (let i = 0; i < stage2Cands.length; i += 5) {
+    const batch = stage2Cands.slice(i, i + 5);
+    const results = await Promise.all(batch.map(async (item) => {
+      try {
+        const smcMulti = await analyzeSMCMulti(item.coin);
+        const multiAI = await analyzeMultiAI(item.coin, item.candles, item.smc, smcMulti);
+        return { ...item, smcMulti, multiAI };
+      } catch { return { ...item, smcMulti: null, multiAI: null }; }
+    }));
+    refined.push(...results);
+    if (i + 5 < stage2Cands.length) await new Promise(r => setTimeout(r, 200));
+  }
+
+  // 計算綜合分數：SMC信心度(40%) + AI共識信心度(40%, 方向需一致) + 結構/SNR加分(20%)
+  function finalScore(item) {
+    let score = item.smc.confidence * 0.4;
+    if (item.multiAI && item.multiAI.length > 0) {
+      const consensus = item.multiAI[item.multiAI.length - 1];
+      const consDir = consensus.direction.includes("做多") ? "long" : consensus.direction.includes("做空") ? "short" : null;
+      const myDir = item.isLong ? "long" : "short";
+      if (consDir === myDir) score += consensus.confidence * 0.4;
+      else score -= 10; // 方向分歧扣分
+    }
+    if (item.smc.structure.includes("上升") && item.isLong) score += 10;
+    if (item.smc.structure.includes("下降") && item.isShort) score += 10;
+    if (item.smc.snr) {
+      if (item.isLong && item.smc.snr.support && item.smc.snr.support.dist < 1.5) score += 10;
+      if (item.isShort && item.smc.snr.resistance && item.smc.snr.resistance.dist < 1.5) score += 10;
+    }
+    return Math.max(0, Math.min(100, score));
+  }
+
+  refined.forEach(item => { item.finalScore = finalScore(item); });
+
+  // 計算進場/SL/TP
+  function buildLevels(item) {
+    const { coin, candles, smc, isLong } = item;
+    const closes = candles.map(c => c.c), highs = candles.map(c => c.h), lows = candles.map(c => c.l);
+    const atr = calcATR(highs, lows, closes);
+    const atrNow = atr[atr.length - 1] || (smc.price * 0.01);
+    const entry = smc.price;
+    const sl = isLong ? entry - atrNow * 1.5 : entry + atrNow * 1.5;
+
+    // TP 優先用 SNR，否則 fallback ATR 倍數
+    let tp1, tp2, tp3;
+    const snr = smc.snr;
+    if (isLong) {
+      tp1 = (snr?.resistance && snr.resistance.dist > 0.5) ? snr.resistance.price : entry + atrNow * 2;
+      tp2 = entry + atrNow * 4;
+      tp3 = entry + atrNow * 6;
+      if (snr?.allResistances?.length) {
+        const between = snr.allResistances.find(r => r.price > tp1 * 1.005 && r.price < tp2 * 1.5);
+        if (between) tp2 = between.price;
+      }
+    } else {
+      tp1 = (snr?.support && snr.support.dist > 0.5) ? snr.support.price : entry - atrNow * 2;
+      tp2 = entry - atrNow * 4;
+      tp3 = entry - atrNow * 6;
+      if (snr?.allSupports?.length) {
+        const between = snr.allSupports.find(s => s.price < tp1 * 0.995 && s.price > tp2 * 0.5);
+        if (between) tp2 = between.price;
+      }
+    }
+
+    return {
+      symbol: coin.symbol, name: coin.name, label: coin.label,
+      binanceSymbol: coin.binanceSymbol, cat: "crypto",
+      direction: isLong ? "long" : "short",
+      signal: smc.signal, confidence: smc.confidence, finalScore: Math.round(item.finalScore),
+      structure: smc.structure,
+      entry, sl, tp1, tp2, tp3,
+      atr: atrNow,
+      reasons: smc.reasons,
+      aiConsensus: item.multiAI ? item.multiAI[item.multiAI.length - 1] : null,
+      ts: Date.now(),
+    };
+  }
+
+  const longs = refined.filter(x => x.isLong).sort((a, b) => b.finalScore - a.finalScore).slice(0, perSide).map(buildLevels);
+  const shorts = refined.filter(x => x.isShort).sort((a, b) => b.finalScore - a.finalScore).slice(0, perSide).map(buildLevels);
+
+  return { longs, shorts, scannedStage1: stage1.length, scannedStage2: refined.length, ts: Date.now() };
+}
