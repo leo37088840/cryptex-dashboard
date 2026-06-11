@@ -723,7 +723,7 @@ export function aiAnalyze(item, candles, smc, smcMulti) {
 
 // ═══════════ 多空推薦掃描 ═══════════════════════════════════════════════════
 // 掃前 N 大成交量幣 → SMC 評分 → 分多空兩欄
-export async function scanRecommendations(coins, top = 200) {
+export async function scanRecommendations(coins, top = 200, onProgress) {
   const cands = coins.slice(0, Math.min(top, coins.length));
   const results = [];
   for (let i = 0; i < cands.length; i += 20) {
@@ -742,6 +742,7 @@ export async function scanRecommendations(coins, top = 200) {
         structure: smc.structure,
       });
     });
+    if (onProgress) onProgress(Math.min(i + 20, cands.length), cands.length);
     if (i + 20 < cands.length) await new Promise(r => setTimeout(r, 150));
   }
   const longs = results.filter(r => r.signal.includes("做多")).sort((a, b) => b.score - a.score).slice(0, 15);
@@ -752,7 +753,7 @@ export async function scanRecommendations(coins, top = 200) {
 // ═══════════ 持倉異常警報掃描 ═══════════════════════════════════════════════
 // 每 3 分鐘掃前 N 幣，對比 OI 5m 變化 + 24h 價格變化
 // 觸發類型：多頭觸發 / 空頭觸發 / 誘空 / 疑似反轉
-export async function scanAnomalies(coins, top = 200) {
+export async function scanAnomalies(coins, top = 200, onProgress) {
   const cands = coins.slice(0, Math.min(top, coins.length));
   const alerts = [];
   for (let i = 0; i < cands.length; i += 15) {
@@ -783,6 +784,7 @@ export async function scanAnomalies(coins, top = 200) {
         });
       }
     });
+    if (onProgress) onProgress(Math.min(i + 15, cands.length), cands.length);
     if (i + 15 < cands.length) await new Promise(r => setTimeout(r, 250));
   }
   return alerts.sort((a, b) => b.severity - a.severity);
@@ -941,15 +943,34 @@ function aiConsensus(otherAIs) {
   return formatAIResult("整合共識", "🧠", total * 2.5, 4, reasons);
 }
 
+// ═══════════ AI 分析快取 ═══════════════════════════════════════════════════
+// 期貨情緒派需要 call 5 支期貨 API，切換幣種/分頁時容易重複呼叫造成卡頓。
+// 用 symbol+最後K棒時間 當 key，60 秒內重複請求直接回傳快取。
+const _multiAICache = new Map();
+const MULTI_AI_TTL = 60 * 1000;
+
 // 主入口：執行所有 AI，回傳 5 個結果
 export async function analyzeMultiAI(item, candles, smc, smcMulti) {
   if (!candles || candles.length < 30) return null;
+  const lastT = candles[candles.length - 1]?.t || 0;
+  const cacheKey = `${item?.symbol || item?.binanceSymbol || "?"}-${lastT}`;
+  const cached = _multiAICache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < MULTI_AI_TTL) return cached.data;
+
   const trend = aiTrendFollower(candles);
   const reversion = aiMeanReversion(candles);
   const smcA = aiSMCFlavor(smc, smcMulti);
   const futures = await aiFuturesSentiment(item, candles);
   const consensus = aiConsensus([trend, reversion, smcA, futures]);
-  return [trend, reversion, smcA, futures, consensus];
+  const result = [trend, reversion, smcA, futures, consensus];
+
+  _multiAICache.set(cacheKey, { ts: Date.now(), data: result });
+  // 簡單清理過舊快取，避免無限增長
+  if (_multiAICache.size > 50) {
+    const oldestKey = _multiAICache.keys().next().value;
+    _multiAICache.delete(oldestKey);
+  }
+  return result;
 }
 
 // ═══════════ 高勝率回測（多時區策略）═══════════════════════════════════════
@@ -1113,7 +1134,7 @@ export async function loadJin10Flash() {
 
 export async function loadCalendar() { return null; }
 // ═══════════ 爆發掃描（多維度評分）═══════════════════════════════════════
-export async function scanExplosive(coins, top = 200) {
+export async function scanExplosive(coins, top = 200, onProgress) {
   const cands = coins.slice(0, Math.min(top, coins.length));
   const results = [];
   for (let i = 0; i < cands.length; i += 8) {
@@ -1188,6 +1209,7 @@ export async function scanExplosive(coins, top = 200) {
         results.push({ symbol: coin.symbol, name: coin.name, label: coin.label, price: coin.price, change: coin.change || 0, score: Math.min(score, 100), direction: direction >= 1 ? "long" : direction <= -1 ? "short" : "neutral", signals, oiChgPct, fundingVal, ts: Date.now(), binanceSymbol: coin.binanceSymbol, cat: "crypto" });
       }
     });
+    if (onProgress) onProgress(Math.min(i + 8, cands.length), cands.length);
     if (i + 8 < cands.length) await new Promise(r => setTimeout(r, 300));
   }
   return results.sort((a, b) => b.score - a.score).slice(0, 40);
@@ -1236,7 +1258,7 @@ export function calcSNR(candles, lookback = 100) {
 // 第一階段：快速掃描全部幣，用 SMC 信心度+結構+SNR 算初步分數
 // 第二階段：對前 15+15 名做完整 AI 共識分析，精選做多/做空各 perSide 名
 // 回傳含進場/SL/TP1-3 的建議單
-export async function scanAutoTrades(coins, top = 99999, perSide = 5) {
+export async function scanAutoTrades(coins, top = 99999, perSide = 5, onProgress) {
   const cands = coins.slice(0, Math.min(top, coins.length));
   const stage1 = [];
 
@@ -1254,6 +1276,7 @@ export async function scanAutoTrades(coins, top = 99999, perSide = 5) {
       if (!isLong && !isShort) return;
       stage1.push({ coin, candles: k, smc, isLong, quickScore: smc.confidence });
     });
+    if (onProgress) onProgress({ stage: 1, done: Math.min(i + 15, cands.length), total: cands.length });
     if (i + 15 < cands.length) await new Promise(r => setTimeout(r, 150));
   }
 
@@ -1273,6 +1296,7 @@ export async function scanAutoTrades(coins, top = 99999, perSide = 5) {
       } catch { return { ...item, smcMulti: null, multiAI: null }; }
     }));
     refined.push(...results);
+    if (onProgress) onProgress({ stage: 2, done: Math.min(i + 5, stage2Cands.length), total: stage2Cands.length });
     if (i + 5 < stage2Cands.length) await new Promise(r => setTimeout(r, 200));
   }
 
