@@ -99,10 +99,9 @@ function ScoreBadge({ label, value, color }) {
   );
 }
 
-function ScoreCard({ symbol, smc, multiAI }) {
+function ScoreCard({ symbol, smc, multiAI, hideHeader = false }) {
   if (!smc) return <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>分析中...</div>;
 
-  const consensus = multiAI && multiAI.length > 0 ? multiAI[multiAI.length - 1] : null;
   const futuresAI = multiAI && multiAI.length > 0 ? multiAI[3] : null; // 期貨情緒派
 
   // 市場動能：來自 SMC 結構
@@ -133,7 +132,6 @@ function ScoreCard({ symbol, smc, multiAI }) {
 
   // 相對強弱（vs BTC）
   let rsLabel = "同步", rsColor = "#f0b90b", rsDesc = "暫無資料";
-  const aiDeep = consensus; // 整合派理由可能含 vs BTC，但目前 multiAI 沒有；用 smc reasons fallback
   const rsReason = (smc.reasons || []).find(r => r.includes("vs BTC") || r.includes("強勢") || r.includes("弱勢"));
   if (rsReason) {
     rsDesc = rsReason;
@@ -143,11 +141,13 @@ function ScoreCard({ symbol, smc, multiAI }) {
 
   return (
     <div style={{ marginBottom: 10 }}>
-      <div style={{ background: `${smc.color}14`, border: `1.5px solid ${smc.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
-        <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>📊 綜合評分卡 · {symbol}</div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: smc.color, fontFamily: "monospace" }}>{smc.signal}</div>
-        <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>信心度 {smc.confidence}%</div>
-      </div>
+      {!hideHeader && (
+        <div style={{ background: `${smc.color}14`, border: `1.5px solid ${smc.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
+          <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>📊 綜合評分卡 · {symbol}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: smc.color, fontFamily: "monospace" }}>{smc.signal}</div>
+          <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>信心度 {smc.confidence}%</div>
+        </div>
+      )}
 
       <Section title="做多/做空依據" color={smc.color} defaultOpen={true}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -188,18 +188,6 @@ function ScoreCard({ symbol, smc, multiAI }) {
         </div>
       </Section>
 
-      <Section title="評分依據" color="#a78bfa" defaultOpen={false}>
-        {smc.reasons.length ? smc.reasons.map((r, i) => (
-          <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}>
-            <span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}
-          </div>
-        )) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號。</div>}
-        {consensus && (
-          <div style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0", borderTop: "1px solid #1a2535", marginTop: 6, paddingTop: 8 }}>
-            <span style={{ color: "#a78bfa" }}>🧠 AI 共識：</span>{consensus.direction} ({consensus.confidence}%)
-          </div>
-        )}
-      </Section>
     </div>
   );
 }
@@ -481,6 +469,7 @@ function AutoTrades({ coins }) {
     return d;
   });
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState(null);
   const [lastScanTs, setLastScanTs] = useState(() => loadAutoTradesTs());
   const [livePrices, setLivePrices] = useState({});
 
@@ -503,8 +492,9 @@ function AutoTrades({ coins }) {
   async function runScan() {
     if (!coins || !coins.length || scanning) return;
     setScanning(true);
+    setScanProgress({ stage: 1, done: 0, total: coins.length });
     try {
-      const r = await scanAutoTrades(coins, coins.length, PER_SIDE);
+      const r = await scanAutoTrades(coins, coins.length, PER_SIDE, (p) => setScanProgress(p));
       setData((prev) => {
         // 補空位：保留現有未結束的單，只在不足 PER_SIDE 時用新掃描結果補滿
         function fillSide(existing, fresh) {
@@ -527,6 +517,7 @@ function AutoTrades({ coins }) {
       setLastScanTs(Date.now());
     } catch {}
     setScanning(false);
+    setScanProgress(null);
   }
 
   // 自動：首次進入若無資料或超過5分鐘，或現有單未滿則觸發掃描；之後每5分鐘檢查一次
@@ -556,8 +547,17 @@ function AutoTrades({ coins }) {
         <button onClick={runScan} disabled={scanning} style={{ background: scanning ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: scanning ? 0.5 : 1 }}>{scanning ? "掃描中..." : "↻ 重新掃描"}</button>
       </div>
 
-      {scanning && data.longs.length === 0 && data.shorts.length === 0 && (
-        <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在全市場掃描並計算建議單，約 1-3 分鐘...</div>
+      {scanning && scanProgress && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+            <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>
+              {scanProgress.stage === 1 ? "第一階段：全市場SMC初篩" : "第二階段：AI共識精選"} {scanProgress.done} / {scanProgress.total}
+            </span>
+          </div>
+          <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ width: `${scanProgress.total ? (scanProgress.done / scanProgress.total) * 100 : 0}%`, height: "100%", background: scanProgress.stage === 1 ? "#58a6ff" : "#a78bfa", transition: "width .3s ease" }} />
+          </div>
+        </div>
       )}
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
@@ -664,7 +664,7 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [tf, setTf] = useState("1H");
   const [candles, setCandles] = useState([]);
-  const [sideTab, setSideTab] = useState("smc");
+  const [sideTab, setSideTab] = useState("overview");
   const [smc, setSmc] = useState(null);
   const [smcMulti, setSmcMulti] = useState([]);
   const [notif, setNotif] = useState(null);
@@ -675,14 +675,17 @@ export default function App() {
   const [recs, setRecs] = useState(null);
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsTs, setRecsTs] = useState(0);
+  const [recsProgress, setRecsProgress] = useState({ done: 0, total: 0 });
   const [alerts, setAlerts] = useState([]);
   const [listLimit, setListLimit] = useState(50);
   const [multiAI, setMultiAI] = useState(null);
   const [multiAILoading, setMultiAILoading] = useState(false);
-  const [alertSubTab, setAlertSubTab] = useState("alerts");
+  const [alertSubTab, setAlertSubTab] = useState("recs");
+  const [infoSubTab, setInfoSubTab] = useState("jin10");
   const [explosive, setExplosive] = useState(null);
   const [explosiveLoading, setExplosiveLoading] = useState(false);
   const [explosiveTs, setExplosiveTs] = useState(0);
+  const [explosiveProgress, setExplosiveProgress] = useState({ done: 0, total: 0 });
 
   const lastSig = { current: null }; // 暫不用 useRef 簡化
 
@@ -795,17 +798,18 @@ export default function App() {
   // 推薦掃描
   const coinsLoaded = coins.length > 0;
   useEffect(() => {
-    if (sideTab !== "recs" || !coinsLoaded) return;
+    if (sideTab !== "scan" || alertSubTab !== "recs" || !coinsLoaded) return;
     if (recs && Date.now() - recsTs < 5 * 60 * 1000) return;
     let cancel = false;
     setRecsLoading(true);
-    scanRecommendations(coins, coins.length).then((r) => {
+    setRecsProgress({ done: 0, total: coins.length });
+    scanRecommendations(coins, coins.length, (done, total) => { if (!cancel) setRecsProgress({ done, total }); }).then((r) => {
       if (cancel) return;
       setRecs(r); setRecsTs(Date.now()); setRecsLoading(false);
     }).catch(() => { if (!cancel) setRecsLoading(false); });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sideTab, coinsLoaded, recsTs]);
+  }, [sideTab, alertSubTab, coinsLoaded, recsTs]);
 
   // 警報掃描
   useEffect(() => {
@@ -835,13 +839,14 @@ export default function App() {
 
   // 爆發掃描（進分頁自動掃 + 每 5 分鐘自動刷新）
   useEffect(() => {
-    if (sideTab !== "alerts" || alertSubTab !== "explosive" || !coinsLoaded) return;
+    if (sideTab !== "scan" || alertSubTab !== "explosive" || !coinsLoaded) return;
     let cancel = false;
     async function run() {
       if (cancel) return;
       setExplosiveLoading(true);
+      setExplosiveProgress({ done: 0, total: coins.length });
       try {
-        const r = await scanExplosive(coins, coins.length);
+        const r = await scanExplosive(coins, coins.length, (done, total) => { if (!cancel) setExplosiveProgress({ done, total }); });
         if (cancel) return;
         setExplosive(r); setExplosiveTs(Date.now());
       } catch {}
@@ -1018,15 +1023,19 @@ button{cursor:pointer;outline:none;font-family:inherit}
           </div>
 
           {/* 分頁 */}
-          <div className="glass-sub" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0, overflowX: "auto" }}>
-            {[["smc", "SMC"], ["ai", "AI 分析"], ["score", "評分卡"], ["journal", "交易紀錄"], ["indicators", "指標"], ["recs", "推薦"], ["alerts", "警報"], ["jin10", "金十"], ["news", "說明"]].map(([id, label]) => (
-              <button key={id} className="tab-btn" onClick={() => setSideTab(id)} style={{ flex: 1, minWidth: 60, background: sideTab === id ? "linear-gradient(180deg,rgba(88,166,255,0.12),transparent)" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#5a6b80", padding: "11px 0", fontSize: 11, fontWeight: sideTab === id ? 700 : 500, fontFamily: "'Sora',sans-serif" }}>{label}</button>
+          <div className="glass-sub" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0 }}>
+            {[["overview", "📊", "總覽"], ["indicators", "📈", "指標"], ["scan", "🔍", "掃描"], ["journal", "💼", "交易"], ["info", "ℹ️", "資訊"]].map(([id, icon, label]) => (
+              <button key={id} className="tab-btn" onClick={() => setSideTab(id)} style={{ flex: 1, background: sideTab === id ? "linear-gradient(180deg,rgba(88,166,255,0.14),transparent)" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#5a6b80", padding: "10px 0 9px", fontSize: 11, fontWeight: sideTab === id ? 700 : 500, fontFamily: "'Sora',sans-serif", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                <span style={{ fontSize: 14, opacity: sideTab === id ? 1 : 0.6 }}>{icon}</span>
+                {label}
+              </button>
             ))}
           </div>
 
+
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
             {/* SMC */}
-            {sideTab === "smc" && <>
+            {sideTab === "overview" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
                 <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{notifOn ? "✓ 已開啟" : "開啟通知"}</button>
@@ -1048,7 +1057,22 @@ button{cursor:pointer;outline:none;font-family:inherit}
                     <div style={{ color: smc.color, fontSize: 30, fontWeight: 800, fontFamily: "'Sora',sans-serif", letterSpacing: 1, lineHeight: 1, textShadow: `0 0 20px ${smc.color}55` }}>{smc.signal}</div>
                   </div>
                 </div>
-                <Section title="多時區 SMC 結構" color="#26a69a" badge="MTF">
+
+                {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
+                {multiAI && multiAI.length > 0 && (() => {
+                  const consensus = multiAI[multiAI.length - 1];
+                  return (
+                    <div style={{ background: `${consensus.color}14`, border: `1.5px solid ${consensus.color}`, borderRadius: 10, padding: 12, marginBottom: 12, textAlign: "center" }}>
+                      <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識 · {selected?.symbol}</div>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: consensus.color, fontFamily: "monospace" }}>{consensus.direction}</div>
+                      <div style={{ color: consensus.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>共識信心 {consensus.confidence}%</div>
+                    </div>
+                  );
+                })()}
+
+                <ScoreCard symbol={selected?.symbol} smc={smc} multiAI={multiAI} hideHeader={true} />
+
+                <Section title="多時區 SMC 結構" color="#26a69a" badge="MTF" defaultOpen={false}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                     {smcMulti.map(({ tf: t, result: r }) => {
                       const sig = r ? r.signal : "資料不足";
@@ -1063,77 +1087,27 @@ button{cursor:pointer;outline:none;font-family:inherit}
                     })}
                   </div>
                 </Section>
-                <Section title="市場結構" color="#58a6ff">
+
+                <Section title="市場結構" color="#58a6ff" defaultOpen={false}>
                   <IndRow label="當前結構" value={smc.structure} color={smc.structure.includes("上升") ? "#26a69a" : smc.structure.includes("下降") ? "#ef5350" : "#c9d1d9"} />
                   <IndRow label="流動性掃單" value={smc.sweep || "無"} color={smc.sweep ? "#f0e68c" : "#4a5568"} />
                   <IndRow label="FVG 失衡" value={smc.fvg ? (smc.fvg.type === "bull" ? "多頭缺口" : "空頭缺口") : "無"} color={smc.fvg ? (smc.fvg.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
                   <IndRow label="訂單塊 OB" value={smc.ob ? (smc.ob.type === "bull" ? "多頭OB" : "空頭OB") : "無"} color={smc.ob ? (smc.ob.type === "bull" ? "#26a69a" : "#ef5350") : "#4a5568"} />
                 </Section>
-                {smc.snr && (smc.snr.support || smc.snr.resistance) && (
-                  <Section title="關鍵價位 SNR" color="#ffb300">
-                    {smc.snr.resistance && (
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #1a2535" }}>
-                        <span style={{ color: "#ef5350", fontSize: 11, fontFamily: "monospace" }}>📍 上方壓力</span>
-                        <span className="mono" style={{ color: "#ef5350", fontSize: 11, fontWeight: 700 }}>
-                          {smc.snr.resistance.price.toFixed(smc.snr.resistance.price > 1 ? 4 : 6)} (+{smc.snr.resistance.dist.toFixed(2)}%)
-                        </span>
-                      </div>
-                    )}
-                    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0" }}>
-                      <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace" }}>現價</span>
-                      <span className="mono" style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>{smc.snr.price.toFixed(smc.snr.price > 1 ? 4 : 6)}</span>
-                    </div>
-                    {smc.snr.support && (
-                      <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: "1px solid #1a2535" }}>
-                        <span style={{ color: "#26a69a", fontSize: 11, fontFamily: "monospace" }}>📍 下方支撐</span>
-                        <span className="mono" style={{ color: "#26a69a", fontSize: 11, fontWeight: 700 }}>
-                          {smc.snr.support.price.toFixed(smc.snr.support.price > 1 ? 4 : 6)} (-{smc.snr.support.dist.toFixed(2)}%)
-                        </span>
-                      </div>
-                    )}
-                  </Section>
-                )}
+
+                {multiAI && multiAI.length > 0 && <Section title="🤖 5 個 AI 派系觀點" color="#a78bfa" defaultOpen={false}>
+                  <div style={{ color: "#4a5568", fontSize: 9, padding: "0 0 8px", lineHeight: 1.5 }}>點任一派系展開查看完整理由</div>
+                  {multiAI.slice(0, -1).map((ai, i) => <AICard key={i} ai={ai} defaultOpen={false} />)}
+                  <AICard ai={multiAI[multiAI.length - 1]} defaultOpen={false} />
+                </Section>}
+
                 <Section title="判斷依據" color="#f0e68c" defaultOpen={false}>
                   {smc.reasons.length ? smc.reasons.map((r, i) => <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}><span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}</div>) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號，建議觀望。</div>}
                 </Section>
               </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
             </>}
 
-            {sideTab === "ai" && <>
-              {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
-              {multiAI && multiAI.length > 0 && (() => {
-                const consensus = multiAI[multiAI.length - 1];
-                return (
-                  <div style={{ background: `${consensus.color}14`, border: `1.5px solid ${consensus.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
-                    <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識 · {selected?.symbol}</div>
-                    <div style={{ fontSize: 20, fontWeight: 800, color: consensus.color, fontFamily: "monospace" }}>{consensus.direction}</div>
-                    <div style={{ color: consensus.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>共識信心 {consensus.confidence}%</div>
-                  </div>
-                );
-              })()}
-              {multiAI && multiAI.length > 0 && <Section title="🤖 5 個 AI 派系觀點" color="#a78bfa" defaultOpen={true}>
-                <div style={{ color: "#4a5568", fontSize: 9, padding: "0 0 8px", lineHeight: 1.5 }}>點任一派系展開查看完整理由</div>
-                {multiAI.slice(0, -1).map((ai, i) => <AICard key={i} ai={ai} defaultOpen={false} />)}
-              </Section>}
-              {multiAI && multiAI.length > 0 && <Section title="🧠 整合共識詳情" color={multiAI[multiAI.length - 1].color} defaultOpen={true}>
-                <AICard ai={multiAI[multiAI.length - 1]} defaultOpen={true} />
-              </Section>}
-              <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.5, padding: "8px 4px" }}>
-                <p style={{ color: "#787b86", marginBottom: 4 }}>5 個 AI 派系：</p>
-                <p>· 🏃 <span style={{ color: "#26a69a" }}>趨勢跟隨</span>：MA 排列 + 多時區趨勢</p>
-                <p>· 🔁 <span style={{ color: "#f0b90b" }}>均值回歸</span>：RSI 極值 + KDJ 反轉</p>
-                <p>· 🏛️ <span style={{ color: "#58a6ff" }}>SMC 機構</span>：結構轉折 + FVG/OB/掃單</p>
-                <p>· 💰 <span style={{ color: "#a78bfa" }}>期貨情緒</span>：資金費率 + OI + 多空比</p>
-                <p>· 🧠 <span style={{ color: "#e040fb" }}>整合共識</span>：加權合併四派系結論</p>
-              </div>
-            </>}
-
-            {/* 評分卡 */}
-            {sideTab === "score" && (
-              <ScoreCard symbol={selected?.symbol} smc={smc} multiAI={multiAI} />
-            )}
-
-            {/* 交易紀錄 */}
+            {/* 交易 */}
             {sideTab === "journal" && (
               <TradeJournal coins={coins} defaultSymbol={selected?.symbol} />
             )}
@@ -1162,8 +1136,17 @@ button{cursor:pointer;outline:none;font-family:inherit}
               </Section>
             </>}
 
-            {/* 推薦 */}
-            {sideTab === "recs" && <>
+            {/* 掃描（推薦/警報/爆發） */}
+            {sideTab === "scan" && <>
+              {/* 子標籤 */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                {[["recs", "🎯 推薦"], ["alerts", "⚡ 警報"], ["explosive", "🚀 爆發掃描"]].map(([id, label]) => (
+                  <button key={id} onClick={() => setAlertSubTab(id)} style={{ flex: 1, background: alertSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${alertSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: alertSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                ))}
+              </div>
+
+            {/* 推薦子頁 */}
+            {alertSubTab === "recs" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
                   <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空推薦掃描</div>
@@ -1171,7 +1154,15 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 </div>
                 <button onClick={() => setRecsTs(0)} disabled={recsLoading} style={{ background: recsLoading ? "#1a2535" : "#58a6ff", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: recsLoading ? 0.5 : 1 }}>{recsLoading ? "掃描中..." : "↻ 刷新"}</button>
               </div>
-              {recsLoading && !recs && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描全部商品，約 30-60 秒...</div>}
+              {recsLoading && <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>掃描進度</span>
+                  <span style={{ color: "#58a6ff", fontSize: 9, fontFamily: "monospace" }}>{recsProgress.done} / {recsProgress.total || coins.length}</span>
+                </div>
+                <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ width: `${recsProgress.total ? (recsProgress.done / recsProgress.total) * 100 : 0}%`, height: "100%", background: "#58a6ff", transition: "width .3s ease" }} />
+                </div>
+              </div>}
               {recs && <>
                 <Section title={`🟢 適合做多 (${recs.longs.length})`} color="#26a69a">
                   {recs.longs.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做多訊號</div>}
@@ -1204,15 +1195,6 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>已掃 {recs.scanned} / {recs.total} 幣 · {new Date(recsTs).toLocaleTimeString()}</div>
               </>}
             </>}
-
-            {/* 警報 */}
-            {sideTab === "alerts" && <>
-              {/* 子標籤 */}
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {[["alerts", "⚡ 警報"], ["explosive", "🚀 爆發掃描"]].map(([id, label]) => (
-                  <button key={id} onClick={() => setAlertSubTab(id)} style={{ flex: 1, background: alertSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${alertSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: alertSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
-                ))}
-              </div>
 
               {/* 警報子頁 */}
               {alertSubTab === "alerts" && <>
@@ -1254,7 +1236,15 @@ button{cursor:pointer;outline:none;font-family:inherit}
                   </div>
                   <button onClick={() => setExplosiveTs(0)} disabled={explosiveLoading} style={{ background: explosiveLoading ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: explosiveLoading ? 0.5 : 1 }}>{explosiveLoading ? "掃描中..." : "↻ 刷新"}</button>
                 </div>
-                {explosiveLoading && !explosive && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>正在掃描全部商品，約 1-2 分鐘...</div>}
+                {explosiveLoading && <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>掃描進度</span>
+                    <span style={{ color: "#f0b90b", fontSize: 9, fontFamily: "monospace" }}>{explosiveProgress.done} / {explosiveProgress.total || coins.length}</span>
+                  </div>
+                  <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ width: `${explosiveProgress.total ? (explosiveProgress.done / explosiveProgress.total) * 100 : 0}%`, height: "100%", background: "#f0b90b", transition: "width .3s ease" }} />
+                  </div>
+                </div>}
                 {explosive && <>
                   {[["long", "🟢 多頭爆發候選", "#26a69a"], ["short", "🔴 空頭爆發候選", "#ef5350"], ["neutral", "⚡ 能量蓄積中（方向待定）", "#f0b90b"]].map(([dir, title, col]) => {
                     const items = explosive.filter(x => x.direction === dir);
@@ -1295,8 +1285,15 @@ button{cursor:pointer;outline:none;font-family:inherit}
               </>}
             </>}
 
-            {/* 金十 */}
-            {sideTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
+            {/* 資訊（金十+說明） */}
+            {sideTab === "info" && <>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              {[["jin10", "📰 金十快訊"], ["news", "📖 說明"]].map(([id, label]) => (
+                <button key={id} onClick={() => setInfoSubTab(id)} style={{ flex: 1, background: infoSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${infoSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: infoSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+              ))}
+            </div>
+
+            {infoSubTab === "jin10" && <Section title="金十快訊" color="#f0b90b" badge="Jin10 即時">
               <FeedState state={j10flash}>
                 {Array.isArray(j10flash) && j10flash.map((n, i) => (
                   <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
@@ -1309,8 +1306,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
               </FeedState>
             </Section>}
 
-            {/* 說明 */}
-            {sideTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
+            {infoSubTab === "news" && <div style={{ color: "#8b949e", fontSize: 12, lineHeight: 1.8, padding: 4 }}>
               <p style={{ color: "#e6edf3", fontWeight: 700, marginBottom: 8 }}>📡 資料來源</p>
               <p>加密貨幣：Binance + OKX + CoinGecko 合併（幾百個幣）</p>
               <p>期貨資料：Binance Futures（資金費率/OI/多空比/Taker CVD）</p>
@@ -1326,6 +1322,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
               <p>每 5 分鐘全量掃描推薦清單；每 3 分鐘全量掃 OI 異常警報。</p>
             </div>}
+            </>}
           </div>
         </div>
       </div>
