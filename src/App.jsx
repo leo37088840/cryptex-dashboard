@@ -995,6 +995,7 @@ function BacktestPanel({ item }) {
 }
 
 
+export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
   const [search, setSearch] = useState("");
