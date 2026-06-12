@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
   calcSMA, calcMACD, calcRSI, calcKDJ,
@@ -745,7 +745,7 @@ export default function App() {
   const [explosiveTs, setExplosiveTs] = useState(0);
   const [explosiveProgress, setExplosiveProgress] = useState({ done: 0, total: 0 });
 
-  const lastSig = { current: null }; // 暫不用 useRef 簡化
+  const lastSig = useRef(null);
 
   const filtered = useMemo(() => {
     if (!search) return coins;
@@ -801,14 +801,22 @@ export default function App() {
     if (r) {
       const isDir = r.signal.includes("做多") || r.signal.includes("做空");
       const key = `${selected.symbol}-${r.signal}`;
-      if (isDir && lastSig.current !== key) {
+      const prevForSymbol = lastSig.current && lastSig.current.startsWith(`${selected.symbol}-`);
+      if (isDir && notifOn && lastSig.current !== key) {
+        // 首次看到這個幣種（剛切換過來）只記錄、不跳橫幅；之後訊號真的改變才跳
+        const shouldBanner = prevForSymbol;
         lastSig.current = key;
-        const p = { signal: r.signal, color: r.color, symbol: selected.symbol, ts: Date.now(), confidence: r.confidence };
-        setNotif(p);
-        if (notifOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
-          try { new Notification(`📊 ${selected.symbol} SMC 訊號`, { body: `${r.signal}｜信心 ${r.confidence}%` }); } catch {}
+        if (shouldBanner) {
+          const p = { signal: r.signal, color: r.color, symbol: selected.symbol, ts: Date.now(), confidence: r.confidence };
+          setNotif(p);
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            try { new Notification(`📊 ${selected.symbol} SMC 訊號`, { body: `${r.signal}｜信心 ${r.confidence}%` }); } catch {}
+          }
+          setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
         }
-        setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
+      } else if (!isDir && notifOn) {
+        // 觀望時更新記錄，避免下次回到方向訊號被當成「首次」
+        lastSig.current = key;
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
