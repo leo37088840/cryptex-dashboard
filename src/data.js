@@ -184,6 +184,46 @@ export function subscribeCryptoKline(binanceSymbol, tf, onCandle) {
   return () => { closed = true; try { ws && ws.close(); } catch {} };
 }
 
+// ═══════════ 全市場大額強平流（Binance !forceOrder@arr）═══════════════════════
+// onLiq 回傳 { symbol, side, price, qty, usd, ts }；side: "long"=多單被強平(賣出), "short"=空單被強平(買入)
+export function subscribeLiquidations(onLiq, minUSD = 50000) {
+  let ws = null, closed = false, retry = 0;
+  const connect = () => {
+    if (closed) return;
+    try {
+      ws = new WebSocket("wss://fstream.binance.com/ws/!forceOrder@arr");
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          const o = d.o || d;
+          if (!o || !o.s) return;
+          const price = parseFloat(o.ap || o.p) || 0;   // 平均成交價
+          const qty = parseFloat(o.q) || 0;             // 數量
+          const usd = price * qty;
+          if (usd < minUSD) return;
+          // 強平方向：o.S = SELL 代表多單被爆(強制賣出)，BUY 代表空單被爆
+          const side = o.S === "SELL" ? "long" : "short";
+          onLiq({
+            symbol: o.s.replace("USDT", "-USDT"),
+            name: o.s.replace("USDT", ""),
+            binanceSymbol: o.s,
+            side, price, qty, usd,
+            ts: o.T || Date.now(),
+          });
+        } catch {}
+      };
+      ws.onclose = () => {
+        if (closed) return;
+        retry = Math.min(retry + 1, 5);
+        setTimeout(connect, retry * 1000);
+      };
+      ws.onerror = () => { try { ws.close(); } catch {} };
+    } catch {}
+  };
+  connect();
+  return () => { closed = true; try { ws && ws.close(); } catch {} };
+}
+
 // ═══════════ INDICATORS ═════════════════════════════════════════════════════
 export function calcSMA(d, p) {
   return d.map((_, i) => (i < p - 1 ? null : d.slice(i - p + 1, i + 1).reduce((a, b) => a + b, 0) / p));
@@ -1258,7 +1298,7 @@ export function calcSNR(candles, lookback = 100) {
 // 第一階段：快速掃描全部幣，用 SMC 信心度+結構+SNR 算初步分數
 // 第二階段：對前 15+15 名做完整 AI 共識分析，精選做多/做空各 perSide 名
 // 回傳含進場/SL/TP1-3 的建議單
-export async function scanAutoTrades(coins, top = 99999, perSide = 5, onProgress) {
+export async function scanAutoTrades(coins, top = 99999, perSide = 5, onProgress, weights = null) {
   const cands = coins.slice(0, Math.min(top, coins.length));
   const stage1 = [];
 
@@ -1315,6 +1355,21 @@ export async function scanAutoTrades(coins, top = 99999, perSide = 5, onProgress
     if (item.smc.snr) {
       if (item.isLong && item.smc.snr.support && item.smc.snr.support.dist < 1.5) score += 10;
       if (item.isShort && item.smc.snr.resistance && item.smc.snr.resistance.dist < 1.5) score += 10;
+    }
+    // 歷史勝率回饋：根據該訊號組合過往表現微調（±最多15分）
+    if (weights) {
+      const struc = (item.smc.structure || "").split(" ")[0];
+      const dir = item.isLong ? "做多" : "做空";
+      const adj = (key, map) => {
+        const stat = map && map[key];
+        if (stat && stat.n >= 3) {
+          // 勝率50%為基準，每偏離10%調整3分，上下限±12
+          return Math.max(-12, Math.min(12, (stat.winRate - 50) / 10 * 3));
+        }
+        return 0;
+      };
+      score += adj(struc, weights.structure);
+      score += adj(dir, weights.direction);
     }
     return Math.max(0, Math.min(100, score));
   }
