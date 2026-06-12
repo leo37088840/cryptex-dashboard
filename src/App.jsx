@@ -446,7 +446,7 @@ function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 
-const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel }) {
+const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, onShare, onSetAlert }) {
   const isLong = trade.direction === "long";
   const dirColor = isLong ? "#26a69a" : "#ef5350";
   const dirLabel = isLong ? "做多" : "做空";
@@ -534,12 +534,17 @@ const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel }
         </div>
       )}
 
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        <button onClick={() => onShare && onShare(trade, livePrice)} style={{ flex: 1, background: "#0f1e2e", border: "1px solid #1a2535", borderRadius: 5, color: "#58a6ff", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>📤 分享</button>
+        <button onClick={() => onSetAlert && onSetAlert(trade)} style={{ flex: 1, background: "#0f1e2e", border: "1px solid #1a2535", borderRadius: 5, color: "#f0b90b", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>🔔 到價提醒</button>
+      </div>
+
       {finished ? (
         <div style={{ width: "100%", marginTop: 8, background: "#1a2535", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace", textAlign: "center" }}>
           {slHit() ? "已觸及止損，平倉中…" : "已達最終止盈，平倉中…"}
         </div>
       ) : (
-        <button onClick={() => onCancel && onCancel(trade)} style={{ width: "100%", marginTop: 8, background: "transparent", border: "1px solid #3a4658", borderRadius: 5, color: "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>撤銷此單（沒跟到，不計入回測）</button>
+        <button onClick={() => onCancel && onCancel(trade)} style={{ width: "100%", marginTop: 6, background: "transparent", border: "1px solid #3a4658", borderRadius: 5, color: "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>撤銷此單（沒跟到，不計入回測）</button>
       )}
     </div>
   );
@@ -567,7 +572,68 @@ function evalClose(trade, livePrice, currentScore) {
   return null;
 }
 
-function AutoTrades({ coins, onNotify }) {
+// ═══════════ 交易分享卡（可截圖）═══════════════════════════════════════════
+function ShareCard({ trade, livePrice, onClose }) {
+  const isLong = trade.direction === "long";
+  const dirColor = isLong ? "#26a69a" : "#ef5350";
+  const fmt = (v) => v == null ? "—" : (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+  let pnlPct = null;
+  if (livePrice && trade.entry) {
+    pnlPct = isLong ? ((livePrice - trade.entry) / trade.entry) * 100 : ((trade.entry - livePrice) / trade.entry) * 100;
+  }
+  const rr = trade.tp1 && trade.sl ? Math.abs(trade.tp1 - trade.entry) / Math.max(Math.abs(trade.entry - trade.sl), 1e-9) : null;
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, animation: "fadeUp .25s ease" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 340 }}>
+        <div style={{ background: "linear-gradient(155deg,#0f1b2a,#070c12)", border: `1px solid ${dirColor}55`, borderRadius: 18, padding: 22, position: "relative", overflow: "hidden", boxShadow: `0 20px 60px -20px ${dirColor}88` }}>
+          <div style={{ position: "absolute", top: -40, right: -40, width: 140, height: 140, borderRadius: "50%", background: `radial-gradient(circle, ${dirColor}22, transparent 70%)` }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18 }}>
+            <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>₿</div>
+            <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 13, fontWeight: 800, letterSpacing: 2, color: "#e6edf3" }}>CRYPTEX</span>
+            <span style={{ marginLeft: "auto", background: `${dirColor}1a`, color: dirColor, fontSize: 11, fontFamily: "monospace", fontWeight: 700, padding: "3px 10px", borderRadius: 6, border: `1px solid ${dirColor}` }}>{isLong ? "▲ 做多" : "▼ 做空"}</span>
+          </div>
+          <div style={{ color: "#e6edf3", fontSize: 26, fontWeight: 800, fontFamily: "'Sora',sans-serif", marginBottom: 2 }}>{trade.name || trade.symbol}</div>
+          <div style={{ color: "#5a6b80", fontSize: 10, fontFamily: "monospace", marginBottom: 16 }}>永續合約 · {trade.signal}</div>
+          {pnlPct != null && (
+            <div style={{ textAlign: "center", marginBottom: 18 }}>
+              <div className="mono" style={{ color: pnlColor(pnlPct), fontSize: 46, fontWeight: 800, lineHeight: 1, textShadow: `0 0 30px ${pnlColor(pnlPct)}66` }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</div>
+              <div style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginTop: 4 }}>未實現盈虧</div>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 6 }}>
+            <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>進場價</div>
+              <div style={{ color: "#c9d1d9", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmt(trade.entry)}</div>
+            </div>
+            <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>現價</div>
+              <div style={{ color: "#c9d1d9", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmt(livePrice)}</div>
+            </div>
+            <div style={{ background: "rgba(38,166,154,0.08)", borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ color: "#26a69a", fontSize: 8, fontFamily: "monospace" }}>止盈 TP1</div>
+              <div style={{ color: "#26a69a", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmt(trade.tp1)}</div>
+            </div>
+            <div style={{ background: "rgba(239,83,80,0.08)", borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ color: "#ef5350", fontSize: 8, fontFamily: "monospace" }}>止損 SL</div>
+              <div style={{ color: "#ef5350", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{fmt(trade.sl)}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+            <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>評分 {trade.finalScore} · R/R {rr ? rr.toFixed(1) : "—"}</span>
+            <span style={{ color: "#3a4658", fontSize: 9, fontFamily: "monospace" }}>{new Date(trade.ts).toLocaleDateString()}</span>
+          </div>
+        </div>
+        <div style={{ textAlign: "center", marginTop: 14, display: "flex", gap: 8 }}>
+          <div style={{ flex: 1, color: "#8b949e", fontSize: 10, fontFamily: "monospace", padding: "8px", background: "#0d1520", borderRadius: 8, border: "1px solid #1a2535" }}>📸 截圖此卡片即可分享</div>
+          <button onClick={onClose} style={{ background: "#1a2535", border: "none", borderRadius: 8, color: "#c9d1d9", padding: "0 18px", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>關閉</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AutoTrades({ coins, onNotify, onSetAlert }) {
   const [data, setData] = useState(() => {
     const d = loadAutoTrades();
     d.longs = (d.longs || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
@@ -580,6 +646,30 @@ function AutoTrades({ coins, onNotify }) {
   const [lastScanTs, setLastScanTs] = useState(() => loadAutoTradesTs());
   const [livePrices, setLivePrices] = useState({});
   const cancelledRef = useRef({});
+  const [sortMode, setSortMode] = useState("score"); // score | pnl
+  const [shareTarget, setShareTarget] = useState(null);
+
+  // 依現價計算單子未實現盈虧%
+  const livePnl = (t) => {
+    const live = livePrices[t.symbol];
+    if (!live || !t.entry) return null;
+    return t.direction === "long" ? ((live - t.entry) / t.entry) * 100 : ((t.entry - live) / t.entry) * 100;
+  };
+  const sortTrades = (arr) => {
+    const a = [...arr];
+    if (sortMode === "pnl") {
+      a.sort((x, y) => {
+        const px = livePnl(x), py = livePnl(y);
+        if (px == null && py == null) return 0;
+        if (px == null) return 1;
+        if (py == null) return -1;
+        return py - px;
+      });
+    } else {
+      a.sort((x, y) => (y.finalScore || 0) - (x.finalScore || 0));
+    }
+    return a;
+  };
 
   useEffect(() => { saveAutoTrades(data); }, [data]);
   useEffect(() => { saveClosedTrades(closed); }, [closed]);
@@ -744,6 +834,13 @@ function AutoTrades({ coins, onNotify }) {
         <button onClick={runScan} disabled={scanning} style={{ background: scanning ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: scanning ? 0.5 : 1 }}>{scanning ? "掃描中..." : "↻ 重新掃描"}</button>
       </div>
 
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center" }}>
+        <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>排序：</span>
+        {[["score", "評分"], ["pnl", "未實現盈虧"]].map(([id, label]) => (
+          <button key={id} onClick={() => setSortMode(id)} style={{ background: sortMode === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${sortMode === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: sortMode === id ? "#58a6ff" : "#5a6b80", padding: "4px 12px", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+        ))}
+      </div>
+
       {scanning && scanProgress && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
@@ -767,12 +864,12 @@ function AutoTrades({ coins, onNotify }) {
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}><div style={{ fontSize: 22, opacity: 0.4, marginBottom: 4 }}>📭</div>暫無符合條件的做多標的</div>}
-        {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} />)}
+        {sortTrades(data.longs).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
         {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}><div style={{ fontSize: 22, opacity: 0.4, marginBottom: 4 }}>📭</div>暫無符合條件的做空標的</div>}
-        {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} />)}
+        {sortTrades(data.shorts).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
       </Section>
 
       {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
@@ -787,6 +884,8 @@ function AutoTrades({ coins, onNotify }) {
         <p>· 自動平倉：觸及SL／最終TP／重新掃描時評分掉到低於40</p>
         <p>· 平倉後移到「已結束」區並跳通知，每日回測統計當日效益</p>
       </div>
+
+      {shareTarget && <ShareCard trade={shareTarget.trade} livePrice={shareTarget.livePrice} onClose={() => setShareTarget(null)} />}
     </>
   );
 }
@@ -875,7 +974,7 @@ function DailyBacktest({ closed, onClear }) {
   );
 }
 
-function TradeJournal({ coins, defaultSymbol, onNotify }) {
+function TradeJournal({ coins, defaultSymbol, onNotify, onSetAlert }) {
   const [journalSubTab, setJournalSubTab] = useState("auto");
   const [trades, setTrades] = useState(() => loadTrades());
   const [showForm, setShowForm] = useState(false);
@@ -917,7 +1016,7 @@ function TradeJournal({ coins, defaultSymbol, onNotify }) {
         ))}
       </div>
 
-      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} />}
+      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} onSetAlert={onSetAlert} />}
 
       {journalSubTab === "manual" && <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1132,6 +1231,7 @@ function RiskOverview({ longs, shorts, livePrices }) {
     }
   });
   const avgPnl = pnlCount > 0 ? pnlSum / pnlCount : null;
+  const totalPnl = pnlCount > 0 ? pnlSum : null; // 各單盈虧%加總（等權重視角）
   // 集中度警示
   let concentLabel = "均衡", concentColor = "#26a69a";
   if (imbalance >= 0.8) { concentLabel = "嚴重偏向" + (nLong > nShort ? "做多" : "做空"); concentColor = "#ef5350"; }
@@ -1141,6 +1241,12 @@ function RiskOverview({ longs, shorts, livePrices }) {
 
   return (
     <Section title="⚖️ 持倉風險總覽" color="#58a6ff" defaultOpen={true}>
+      {totalPnl != null && (
+        <div style={{ background: `${pnlColor(avgPnl)}14`, border: `1px solid ${pnlColor(avgPnl)}55`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, textAlign: "center" }}>
+          <div style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginBottom: 2 }}>持倉總未實現盈虧（等權重）</div>
+          <div className="mono" style={{ color: pnlColor(avgPnl), fontSize: 24, fontWeight: 800 }}>{totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}%</div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
         <div style={{ background: "#0a1218", borderRadius: 6, padding: "8px 6px", textAlign: "center" }}>
           <div style={{ color: "#c9d1d9", fontSize: 16, fontFamily: "monospace", fontWeight: 800 }}>{total}</div>
@@ -1155,7 +1261,7 @@ function RiskOverview({ longs, shorts, livePrices }) {
           <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>多 / 空</div>
         </div>
         <div style={{ background: "#0a1218", borderRadius: 6, padding: "8px 6px", textAlign: "center" }}>
-          <div style={{ color: avgPnl == null ? "#5a6b80" : avgPnl >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontFamily: "monospace", fontWeight: 800 }}>{avgPnl == null ? "—" : (avgPnl >= 0 ? "+" : "") + avgPnl.toFixed(1) + "%"}</div>
+          <div style={{ color: pnlColor(avgPnl), fontSize: 16, fontFamily: "monospace", fontWeight: 800 }}>{avgPnl == null ? "—" : (avgPnl >= 0 ? "+" : "") + avgPnl.toFixed(1) + "%"}</div>
           <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>平均盈虧</div>
         </div>
       </div>
@@ -1899,7 +2005,7 @@ button:active{transform:scale(.97)}
 
             {/* 交易 */}
             {sideTab === "journal" && (
-              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} onNotify={pushNotif} />
+              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} onNotify={pushNotif} onSetAlert={(t) => { addPriceAlert(t.symbol, t.entry, t.direction === "long" ? "below" : "above"); pushNotif({ symbol: t.symbol, signal: `已設到價提醒 @ ${t.entry}`, color: "#f0b90b", confidence: 0 }); }} />
             )}
 
             {sideTab === "indicators" && indData && <>
@@ -1962,7 +2068,11 @@ button:active{transform:scale(.97)}
                       <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
                       <div style={{ flex: 1, minWidth: 40 }}>
                         <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div>
-                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2, display: "flex", gap: 6 }}>
+                          <span>{r.structure.split(" ")[0]}</span>
+                          {r.price != null && <span style={{ color: "#5a6b80" }}>${r.price > 1 ? r.price.toFixed(3) : r.price.toFixed(5)}</span>}
+                          {r.change != null && <span style={{ color: r.change >= 0 ? "#26a69a" : "#ef5350" }}>{r.change >= 0 ? "+" : ""}{r.change.toFixed(1)}%</span>}
+                        </div>
                       </div>
                       <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
                       <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
@@ -1976,7 +2086,11 @@ button:active{transform:scale(.97)}
                       <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
                       <div style={{ flex: 1, minWidth: 40 }}>
                         <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div>
-                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>{r.structure.split(" ")[0]}</div>
+                        <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2, display: "flex", gap: 6 }}>
+                          <span>{r.structure.split(" ")[0]}</span>
+                          {r.price != null && <span style={{ color: "#5a6b80" }}>${r.price > 1 ? r.price.toFixed(3) : r.price.toFixed(5)}</span>}
+                          {r.change != null && <span style={{ color: r.change >= 0 ? "#26a69a" : "#ef5350" }}>{r.change >= 0 ? "+" : ""}{r.change.toFixed(1)}%</span>}
+                        </div>
                       </div>
                       <span style={{ color: "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 50, textAlign: "right" }}>{r.signal}</span>
                       <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace", minWidth: 32, textAlign: "right" }}>{r.confidence}%</span>
