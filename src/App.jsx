@@ -709,6 +709,8 @@ function AutoTrades({ coins, onNotify }) {
         </div>
       )}
 
+      <RiskOverview longs={data.longs} shorts={data.shorts} livePrices={livePrices} />
+
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做多標的</div>}
         {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} />)}
@@ -723,6 +725,7 @@ function AutoTrades({ coins, onNotify }) {
 
       <ClosedTradesSection closed={closed} />
       <DailyBacktest closed={closed} onClear={clearClosed} />
+      <WinRateFeedback closed={closed} />
 
       <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
         <p style={{ color: "#5a6b80", marginBottom: 4 }}>說明：</p>
@@ -995,6 +998,233 @@ function BacktestPanel({ item }) {
 }
 
 
+// ═══════════ TradingView 圖表嵌入 ═══════════════════════════════════════════
+function TVChart({ symbol }) {
+  const containerRef = useRef(null);
+  const tvSymbol = useMemo(() => {
+    if (!symbol) return "BINANCE:BTCUSDT.P";
+    const name = symbol.replace("-USDT", "");
+    return `BINANCE:${name}USDT.P`;
+  }, [symbol]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    containerRef.current.innerHTML = "";
+    const script = document.createElement("script");
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.type = "text/javascript";
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: tvSymbol,
+      interval: "60",
+      timezone: "Asia/Taipei",
+      theme: "dark",
+      style: "1",
+      locale: "zh_TW",
+      backgroundColor: "rgba(13,21,32,1)",
+      gridColor: "rgba(255,255,255,0.04)",
+      hide_top_toolbar: false,
+      hide_legend: false,
+      allow_symbol_change: false,
+      save_image: false,
+      studies: ["STD;SMA"],
+      support_host: "https://www.tradingview.com",
+    });
+    containerRef.current.appendChild(script);
+  }, [tvSymbol]);
+
+  return (
+    <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 10, overflow: "hidden", marginBottom: 12 }}>
+      <div style={{ height: 360, width: "100%" }} ref={containerRef} />
+    </div>
+  );
+}
+
+// ═══════════ 關注清單 storage ═══════════════════════════════════════════════
+const WATCHLIST_KEY = "cryptex_watchlist_v1";
+function loadWatchlist() {
+  try { const r = localStorage.getItem(WATCHLIST_KEY); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+function saveWatchlist(arr) {
+  try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(arr)); } catch {}
+}
+
+// ═══════════ 到價提醒 storage ═══════════════════════════════════════════════
+const ALERTS_KEY = "cryptex_price_alerts_v1";
+function loadPriceAlerts() {
+  try { const r = localStorage.getItem(ALERTS_KEY); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+function savePriceAlerts(arr) {
+  try { localStorage.setItem(ALERTS_KEY, JSON.stringify(arr)); } catch {}
+}
+
+// ═══════════ 持倉風險總覽 ═══════════════════════════════════════════════════
+function RiskOverview({ longs, shorts, livePrices }) {
+  const all = [...longs, ...shorts];
+  if (all.length === 0) return null;
+  const nLong = longs.length, nShort = shorts.length;
+  const total = all.length;
+  // 集中度：多空是否嚴重失衡
+  const imbalance = total > 0 ? Math.abs(nLong - nShort) / total : 0;
+  // 平均未實現盈虧
+  let pnlSum = 0, pnlCount = 0;
+  all.forEach((t) => {
+    const live = livePrices[t.symbol];
+    if (live && t.entry) {
+      const isLong = t.direction === "long";
+      pnlSum += isLong ? ((live - t.entry) / t.entry) * 100 : ((t.entry - live) / t.entry) * 100;
+      pnlCount++;
+    }
+  });
+  const avgPnl = pnlCount > 0 ? pnlSum / pnlCount : null;
+  // 集中度警示
+  let concentLabel = "均衡", concentColor = "#26a69a";
+  if (imbalance >= 0.8) { concentLabel = "嚴重偏向" + (nLong > nShort ? "做多" : "做空"); concentColor = "#ef5350"; }
+  else if (imbalance >= 0.4) { concentLabel = "略偏" + (nLong > nShort ? "多" : "空"); concentColor = "#f0b90b"; }
+
+  const longPct = total > 0 ? (nLong / total) * 100 : 50;
+
+  return (
+    <Section title="⚖️ 持倉風險總覽" color="#58a6ff" defaultOpen={true}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
+        <div style={{ background: "#0a1218", borderRadius: 6, padding: "8px 6px", textAlign: "center" }}>
+          <div style={{ color: "#c9d1d9", fontSize: 16, fontFamily: "monospace", fontWeight: 800 }}>{total}</div>
+          <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>持倉數</div>
+        </div>
+        <div style={{ background: "#0a1218", borderRadius: 6, padding: "8px 6px", textAlign: "center" }}>
+          <div style={{ fontSize: 16, fontFamily: "monospace", fontWeight: 800 }}>
+            <span style={{ color: "#26a69a" }}>{nLong}</span>
+            <span style={{ color: "#4a5568", fontSize: 11 }}> / </span>
+            <span style={{ color: "#ef5350" }}>{nShort}</span>
+          </div>
+          <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>多 / 空</div>
+        </div>
+        <div style={{ background: "#0a1218", borderRadius: 6, padding: "8px 6px", textAlign: "center" }}>
+          <div style={{ color: avgPnl == null ? "#5a6b80" : avgPnl >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontFamily: "monospace", fontWeight: 800 }}>{avgPnl == null ? "—" : (avgPnl >= 0 ? "+" : "") + avgPnl.toFixed(1) + "%"}</div>
+          <div style={{ color: "#5a6b80", fontSize: 8, fontFamily: "monospace" }}>平均盈虧</div>
+        </div>
+      </div>
+
+      {/* 多空分布條 */}
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+          <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace" }}>做多 {nLong}</span>
+          <span style={{ color: concentColor, fontSize: 9, fontFamily: "monospace", fontWeight: 700 }}>{concentLabel}</span>
+          <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace" }}>做空 {nShort}</span>
+        </div>
+        <div style={{ height: 6, borderRadius: 3, overflow: "hidden", display: "flex", background: "#1a2535" }}>
+          <div style={{ width: `${longPct}%`, background: "#26a69a", transition: "width .3s ease" }} />
+          <div style={{ width: `${100 - longPct}%`, background: "#ef5350", transition: "width .3s ease" }} />
+        </div>
+      </div>
+
+      <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6 }}>
+        {imbalance >= 0.8 ? "⚠️ 持倉嚴重偏向單邊，方向錯誤時風險集中，建議分散或減少同向曝險。" : imbalance >= 0.4 ? "持倉略偏單邊，留意大盤反向時的連帶風險。" : "多空分布均衡，方向風險分散良好。"}
+      </div>
+    </Section>
+  );
+}
+
+// ═══════════ 勝率回饋分析 ═══════════════════════════════════════════════════
+// 從已結束單統計：不同結構/方向/評分區間的勝率，找出高勝率組合
+function WinRateFeedback({ closed }) {
+  const analysis = useMemo(() => {
+    if (!closed || closed.length < 3) return null;
+    // 依「結構」分組
+    const byStructure = new Map();
+    const byScoreBand = new Map();
+    const byDirection = new Map();
+    closed.forEach((t) => {
+      const win = t.pnlPct >= 0;
+      // 結構
+      const struc = (t.structure || "未知").split(" ")[0];
+      if (!byStructure.has(struc)) byStructure.set(struc, { w: 0, n: 0 });
+      const s = byStructure.get(struc); s.n++; if (win) s.w++;
+      // 評分區間
+      const band = t.finalScore >= 70 ? "70+" : t.finalScore >= 50 ? "50-69" : "<50";
+      if (!byScoreBand.has(band)) byScoreBand.set(band, { w: 0, n: 0 });
+      const b = byScoreBand.get(band); b.n++; if (win) b.w++;
+      // 方向
+      const dir = t.direction === "long" ? "做多" : "做空";
+      if (!byDirection.has(dir)) byDirection.set(dir, { w: 0, n: 0 });
+      const d = byDirection.get(dir); d.n++; if (win) d.w++;
+    });
+    const toRows = (m) => Array.from(m.entries()).map(([k, v]) => ({ k, winRate: v.n ? (v.w / v.n) * 100 : 0, n: v.n })).sort((a, b) => b.winRate - a.winRate);
+    return { structure: toRows(byStructure), scoreBand: toRows(byScoreBand), direction: toRows(byDirection) };
+  }, [closed]);
+
+  if (!analysis) return (
+    <Section title="🎯 勝率回饋分析" color="#a78bfa" defaultOpen={false}>
+      <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>需累積至少 3 筆已結束單才能分析。目前 {closed?.length || 0} 筆。</div>
+    </Section>
+  );
+
+  const renderGroup = (title, rows) => (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ color: "#8b949e", fontSize: 10, fontFamily: "monospace", fontWeight: 700, marginBottom: 4 }}>{title}</div>
+      {rows.map((r) => (
+        <div key={r.k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+          <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace", minWidth: 70 }}>{r.k}</span>
+          <div style={{ flex: 1, height: 5, background: "#1a2535", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ width: `${r.winRate}%`, height: "100%", background: r.winRate >= 60 ? "#26a69a" : r.winRate >= 40 ? "#f0b90b" : "#ef5350" }} />
+          </div>
+          <span style={{ color: r.winRate >= 60 ? "#26a69a" : r.winRate >= 40 ? "#f0b90b" : "#ef5350", fontSize: 10, fontFamily: "monospace", fontWeight: 700, minWidth: 38, textAlign: "right" }}>{r.winRate.toFixed(0)}%</span>
+          <span style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", minWidth: 26, textAlign: "right" }}>n={r.n}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  const best = [...analysis.structure, ...analysis.scoreBand].filter(r => r.n >= 2).sort((a, b) => b.winRate - a.winRate)[0];
+
+  return (
+    <Section title="🎯 勝率回饋分析" color="#a78bfa" defaultOpen={false}>
+      {best && best.winRate >= 50 && (
+        <div style={{ background: "#26a69a14", border: "1px solid #26a69a55", borderRadius: 6, padding: "8px 10px", marginBottom: 10 }}>
+          <span style={{ color: "#26a69a", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>💡 最高勝率組合：{best.k}（{best.winRate.toFixed(0)}%，{best.n}筆）</span>
+        </div>
+      )}
+      {renderGroup("依市場結構", analysis.structure)}
+      {renderGroup("依評分區間", analysis.scoreBand)}
+      {renderGroup("依方向", analysis.direction)}
+      <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6 }}>樣本越多越準。勝率低於40%的組合（紅）未來可考慮避開或降低權重。</div>
+    </Section>
+  );
+}
+
+// ═══════════ 到價提醒卡 ═══════════════════════════════════════════════════
+function PriceAlertCard({ symbol, currentPrice, alerts, onAdd, onRemove }) {
+  const [target, setTarget] = useState("");
+  const mine = (alerts || []).filter((a) => a.symbol === symbol);
+
+  function submit() {
+    const t = parseFloat(target);
+    if (!t || !symbol) return;
+    const dir = t >= currentPrice ? "above" : "below";
+    onAdd(symbol, t, dir);
+    setTarget("");
+  }
+
+  return (
+    <Section title="🔔 到價提醒" color="#f0b90b" badge={mine.length ? `${mine.length}個` : undefined} defaultOpen={false}>
+      <div style={{ display: "flex", gap: 6, marginBottom: mine.length ? 10 : 0 }}>
+        <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder={`目標價（現價 ${currentPrice ? (currentPrice > 1 ? currentPrice.toFixed(4) : currentPrice.toFixed(6)) : "—"}）`} inputMode="decimal" style={{ flex: 1, background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, color: "#c9d1d9", padding: "7px 10px", fontSize: 12, fontFamily: "monospace", outline: "none" }} />
+        <button onClick={submit} style={{ background: "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "0 16px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>設定</button>
+      </div>
+      {mine.map((a) => (
+        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#0a1218", border: "1px solid #1a2535", borderRadius: 6, padding: "6px 10px", marginBottom: 4 }}>
+          <span style={{ color: a.dir === "above" ? "#26a69a" : "#ef5350", fontSize: 12 }}>{a.dir === "above" ? "↑" : "↓"}</span>
+          <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{a.target}</span>
+          <span style={{ color: a.fired ? "#26a69a" : "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>{a.fired ? "✓ 已觸發" : (a.dir === "above" ? "突破時通知" : "跌破時通知")}</span>
+          <button onClick={() => onRemove(a.id)} style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#ef5350", fontSize: 14 }}>×</button>
+        </div>
+      ))}
+      {mine.length === 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", marginTop: 8 }}>設定目標價，價格突破/跌破時跳通知（需開啟通知）。</div>}
+    </Section>
+  );
+}
+
 export default function App() {
   const isMobile = useIsMobile();
   const [coins, setCoins] = useState([]);
@@ -1024,15 +1254,57 @@ export default function App() {
   const [explosiveLoading, setExplosiveLoading] = useState(false);
   const [explosiveTs, setExplosiveTs] = useState(0);
   const [explosiveProgress, setExplosiveProgress] = useState({ done: 0, total: 0 });
+  const [watchlist, setWatchlist] = useState(() => loadWatchlist());
+  const [priceAlerts, setPriceAlerts] = useState(() => loadPriceAlerts());
+  const [showWatchOnly, setShowWatchOnly] = useState(false);
 
   const lastSig = useRef(null);
+  const alertFiredRef = useRef({});
+
+  // 關注清單 / 到價提醒持久化
+  useEffect(() => { saveWatchlist(watchlist); }, [watchlist]);
+  useEffect(() => { savePriceAlerts(priceAlerts); }, [priceAlerts]);
+
+  function toggleWatch(sym) {
+    setWatchlist((prev) => prev.includes(sym) ? prev.filter((s) => s !== sym) : [...prev, sym]);
+  }
+  function addPriceAlert(symbol, target, dir) {
+    setPriceAlerts((prev) => [{ id: Date.now(), symbol, target, dir, created: Date.now(), fired: false }, ...prev]);
+  }
+  function removePriceAlert(id) {
+    setPriceAlerts((prev) => prev.filter((a) => a.id !== id));
+  }
+
+  // 到價提醒監控：每次 coins 更新檢查
+  useEffect(() => {
+    if (!coins || !coins.length || !priceAlerts.length) return;
+    priceAlerts.forEach((a) => {
+      if (a.fired) return;
+      const c = coins.find((x) => x.symbol === a.symbol || x.name === a.symbol.replace("-USDT", ""));
+      if (!c) return;
+      const hit = a.dir === "above" ? c.price >= a.target : c.price <= a.target;
+      if (hit && !alertFiredRef.current[a.id]) {
+        alertFiredRef.current[a.id] = true;
+        setPriceAlerts((prev) => prev.map((x) => x.id === a.id ? { ...x, fired: true } : x));
+        const p = { signal: `到價提醒 ${a.dir === "above" ? "↑" : "↓"} ${a.target}`, color: "#f0b90b", symbol: a.symbol, ts: Date.now(), confidence: 0 };
+        setNotif(p);
+        if (notifOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try { new Notification(`🔔 ${a.symbol} 到價`, { body: `${a.dir === "above" ? "突破" : "跌破"} ${a.target}（現價 ${c.price}）` }); } catch {}
+        }
+        setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coins, priceAlerts]);
 
   const filtered = useMemo(() => {
-    if (!search) return coins;
+    let base = coins;
+    if (showWatchOnly) base = coins.filter((c) => watchlist.includes(c.symbol));
+    if (!search) return base;
     const q = search.toUpperCase();
-    return coins.filter((c) => c.name.toUpperCase().includes(q) || (c.symbol || "").toUpperCase().includes(q) || (c.label || "").toUpperCase().includes(q));
-  }, [search, coins]);
-  const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
+    return base.filter((c) => c.name.toUpperCase().includes(q) || (c.symbol || "").toUpperCase().includes(q) || (c.label || "").toUpperCase().includes(q));
+  }, [search, coins, showWatchOnly, watchlist]);
+  const visibleList = useMemo(() => (search || showWatchOnly) ? filtered : filtered.slice(0, listLimit), [filtered, search, showWatchOnly, listLimit]);
 
   // 載入加密貨幣列表
   const coinCountRef = useRef(0);
@@ -1327,8 +1599,9 @@ button:active{transform:scale(.97)}
 
       {/* 手機版：商品列表 chips（橫向） */}
       {isMobile && <div style={{ background: "#080d14", borderBottom: "1px solid #1a2535", flexShrink: 0 }}>
-        <div style={{ padding: "6px 8px" }}>
-          <SearchInput key="search-box" value={search} onChange={setSearch} />
+        <div style={{ padding: "6px 8px", display: "flex", gap: 6 }}>
+          <div style={{ flex: 1 }}><SearchInput key="search-box" value={search} onChange={setSearch} /></div>
+          <button onClick={() => setShowWatchOnly((v) => !v)} style={{ flexShrink: 0, background: showWatchOnly ? "#1a1a0a" : "#0d1520", border: `1px solid ${showWatchOnly ? "#f0b90b" : "#1a2535"}`, borderRadius: 5, color: showWatchOnly ? "#f0b90b" : "#5a6b80", padding: "0 12px", fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{showWatchOnly ? "★" : "☆"}{watchlist.length > 0 ? watchlist.length : ""}</button>
         </div>
         <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 8px 8px" }}>
           {visibleList.map((coin) => {
@@ -1336,7 +1609,10 @@ button:active{transform:scale(.97)}
             const active = selected?.symbol === coin.symbol;
             return (
               <button key={coin.symbol} onClick={() => setSelected(live)} style={{ flexShrink: 0, background: active ? "#0f1e2e" : "#0d1520", border: `1px solid ${active ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3, minWidth: 82, alignItems: "flex-start" }}>
-                <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%" }}>
+                  <span style={{ color: active ? "#e6edf3" : "#8b949e", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{coin.name}</span>
+                  <span onClick={(e) => { e.stopPropagation(); toggleWatch(coin.symbol); }} style={{ marginLeft: "auto", color: watchlist.includes(coin.symbol) ? "#f0b90b" : "#3a4658", fontSize: 11, cursor: "pointer" }}>{watchlist.includes(coin.symbol) ? "★" : "☆"}</span>
+                </div>
                 <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3 }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
               </button>
             );
@@ -1349,6 +1625,7 @@ button:active{transform:scale(.97)}
         {!isMobile && <div style={{ width: 200, background: "#080d14", borderRight: "1px solid #1a2535", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ padding: "8px" }}>
             <SearchInput key="search-box" value={search} onChange={setSearch} />
+            <button onClick={() => setShowWatchOnly((v) => !v)} style={{ width: "100%", marginTop: 6, background: showWatchOnly ? "#1a1a0a" : "#0d1520", border: `1px solid ${showWatchOnly ? "#f0b90b" : "#1a2535"}`, borderRadius: 5, color: showWatchOnly ? "#f0b90b" : "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{showWatchOnly ? "★ 只看關注" : "☆ 全部商品"} ({watchlist.length})</button>
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
             {filtered.length === 0 && <div style={{ color: "#3a4658", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
@@ -1365,6 +1642,7 @@ button:active{transform:scale(.97)}
                     <span style={{ color: "#c9d1d9", fontSize: 10, fontFamily: "monospace" }}>{fmtPr(live.price)}</span>
                     <span style={{ background: (live.change || 0) >= 0 ? "#26a69a" : "#ef5350", color: "#fff", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 5px", borderRadius: 3, minWidth: 48, textAlign: "center" }}>{(live.change || 0) >= 0 ? "+" : ""}{(live.change || 0).toFixed(2)}%</span>
                   </div>
+                  <span onClick={(e) => { e.stopPropagation(); toggleWatch(coin.symbol); }} style={{ color: watchlist.includes(coin.symbol) ? "#f0b90b" : "#3a4658", fontSize: 13, flexShrink: 0, cursor: "pointer", padding: "0 2px" }}>{watchlist.includes(coin.symbol) ? "★" : "☆"}</span>
                 </button>
               );
             })}
@@ -1425,6 +1703,8 @@ button:active{transform:scale(.97)}
                 <div><div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>多空訊號通知</div><div style={{ color: "#4a5568", fontSize: 9 }}>橫幅 + 系統通知</div></div>
                 <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{notifOn ? "✓ 已開啟" : "開啟通知"}</button>
               </div>
+              <TVChart symbol={selected?.symbol} />
+              <PriceAlertCard symbol={selected?.symbol} currentPrice={displayPrice} alerts={priceAlerts} onAdd={addPriceAlert} onRemove={removePriceAlert} />
               {smc ? <>
                 <div className={`signal-card ${smc.signal.includes("做多") ? "dir-long" : smc.signal.includes("做空") ? "dir-short" : ""}`} style={{ "--glow": `${smc.color}66`, background: `linear-gradient(145deg, ${smc.color}1f, rgba(13,21,32,0.6))`, border: `1px solid ${smc.color}88`, borderRadius: 16, padding: "18px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16 }}>
                   <div style={{ position: "relative", width: 76, height: 76, flexShrink: 0 }}>
