@@ -755,19 +755,34 @@ export default function App() {
   const visibleList = useMemo(() => search ? filtered : filtered.slice(0, listLimit), [filtered, search, listLimit]);
 
   // 載入加密貨幣列表
+  const coinCountRef = useRef(0);
   useEffect(() => {
     let cancel = false;
     async function run() {
       const list = await loadMarket("crypto");
-      if (cancel) return;
+      if (cancel || !Array.isArray(list)) return;
+      // 保底：若已有清單，且這次抓到的數量明顯偏少（< 現有 70%），判定為不完整，保留舊清單
+      const prevCount = coinCountRef.current;
+      if (prevCount > 0 && list.length > 0 && list.length < prevCount * 0.7) {
+        // 不更新 coins，只更新狀態提示
+        setStatus(`${prevCount} 商品 · 即時`);
+        return;
+      }
+      if (list.length === 0) {
+        // 完全沒抓到就維持現狀
+        if (prevCount === 0) setStatus("來源連線中");
+        return;
+      }
+      coinCountRef.current = list.length;
       setCoins(list);
-      setStatus(list.length > 0 ? `${list.length} 商品 · 即時` : `來源連線中`);
+      setStatus(`${list.length} 商品 · 即時`);
       setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
     }
     run();
     if (search) return () => { cancel = true; };
     const iv = setInterval(run, 30000);
     return () => { cancel = true; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
   // 金十快訊
