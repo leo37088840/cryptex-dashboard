@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, memo } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
   calcSMA, calcMACD, calcRSI, calcKDJ,
@@ -9,7 +9,7 @@ import {
 const INTERVALS = ["15m", "1H", "4H", "1D"];
 
 // 數字滾動動畫：value 變動時平滑過渡到新值
-function CountUp({ value, decimals = 0, duration = 600, prefix = "", suffix = "", style, className }) {
+const CountUp = memo(function CountUp({ value, decimals = 0, duration = 600, prefix = "", suffix = "", style, className }) {
   const [display, setDisplay] = useState(value || 0);
   useEffect(() => {
     const start = performance.now();
@@ -28,8 +28,29 @@ function CountUp({ value, decimals = 0, duration = 600, prefix = "", suffix = ""
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
   return <span className={className} style={style}>{prefix}{display.toFixed(decimals)}{suffix}</span>;
-}
+});
 
+
+// 盈虧/變化的語意化漸層色：大賺深綠→小賺淺綠→小虧淺紅→大虧深紅
+function pnlColor(pct) {
+  if (pct == null || isNaN(pct)) return "#5a6b80";
+  if (pct >= 5) return "#1f9b7a";
+  if (pct >= 1) return "#26a69a";
+  if (pct > 0) return "#5fc9a8";
+  if (pct === 0) return "#8b949e";
+  if (pct > -1) return "#f0908e";
+  if (pct > -5) return "#ef5350";
+  return "#c0392b";
+}
+// 評分/勝率語意色（0-100）
+function scoreColor(v) {
+  if (v == null || isNaN(v)) return "#5a6b80";
+  if (v >= 70) return "#1f9b7a";
+  if (v >= 55) return "#26a69a";
+  if (v >= 45) return "#f0b90b";
+  if (v >= 30) return "#ef8e53";
+  return "#ef5350";
+}
 
 function useIsMobile() {
   const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth < 760 : false);
@@ -363,7 +384,7 @@ function TradeCard({ trade, livePrice, onDelete, onClose }) {
 
       {pnlPct != null && (
         <div style={{ textAlign: "center", padding: "6px 0", marginBottom: 6, background: pnlPct >= 0 ? "#26a69a14" : "#ef535014", borderRadius: 6 }}>
-          <span className="mono" style={{ color: pnlPct >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
+          <span className="mono" style={{ color: pnlColor(pnlPct), fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
           <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginLeft: 6 }}>未實現盈虧 · 現價 {fmt(livePrice)}</span>
         </div>
       )}
@@ -425,7 +446,7 @@ function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 
-function AutoTradeCard({ trade, livePrice, onCancel }) {
+const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel }) {
   const isLong = trade.direction === "long";
   const dirColor = isLong ? "#26a69a" : "#ef5350";
   const dirLabel = isLong ? "做多" : "做空";
@@ -458,14 +479,14 @@ function AutoTradeCard({ trade, livePrice, onCancel }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{trade.name || trade.symbol}</span>
         <span style={{ color: dirColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700, background: `${dirColor}1a`, padding: "1px 6px", borderRadius: 4 }}>{dirLabel}</span>
-        <span style={{ background: "#1a2535", color: "#a78bfa", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 6px", borderRadius: 4 }}>評分 {trade.finalScore}</span>
+        <span style={{ background: scoreColor(trade.finalScore) + "22", color: scoreColor(trade.finalScore), fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 6px", borderRadius: 4, border: `1px solid ${scoreColor(trade.finalScore)}55` }}>評分 {trade.finalScore}</span>
         {statusBadge && <span style={{ color: statusBadge.color, fontSize: 9, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${statusBadge.color}`, padding: "1px 6px", borderRadius: 4 }}>{statusBadge.label}</span>}
         <span style={{ marginLeft: "auto", color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{new Date(trade.ts).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
       </div>
 
       {pnlPct != null && (
         <div style={{ textAlign: "center", padding: "6px 0", marginBottom: 6, background: pnlPct >= 0 ? "#26a69a14" : "#ef535014", borderRadius: 6 }}>
-          <span className="mono" style={{ color: pnlPct >= 0 ? "#26a69a" : "#ef5350", fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
+          <span className="mono" style={{ color: pnlColor(pnlPct), fontSize: 16, fontWeight: 800 }}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%</span>
           <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginLeft: 6 }}>未實現盈虧 · 現價 {fmt(livePrice)}</span>
         </div>
       )}
@@ -522,7 +543,7 @@ function AutoTradeCard({ trade, livePrice, onCancel }) {
       )}
     </div>
   );
-}
+});
 
 // 計算單子結果（用平倉價 vs 進場/SL 算 R 與報酬%）
 function computeOutcome(trade, exitPrice, reason) {
@@ -745,12 +766,12 @@ function AutoTrades({ coins, onNotify }) {
       <RiskOverview longs={data.longs} shorts={data.shorts} livePrices={livePrices} />
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
-        {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做多標的</div>}
+        {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}><div style={{ fontSize: 22, opacity: 0.4, marginBottom: 4 }}>📭</div>暫無符合條件的做多標的</div>}
         {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
-        {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做空標的</div>}
+        {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}><div style={{ fontSize: 22, opacity: 0.4, marginBottom: 4 }}>📭</div>暫無符合條件的做空標的</div>}
         {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} />)}
       </Section>
 
@@ -1265,7 +1286,10 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [tf, setTf] = useState("1H");
   const [candles, setCandles] = useState([]);
-  const [sideTab, setSideTab] = useState("overview");
+  const [sideTab, setSideTab] = useState(() => {
+    try { return localStorage.getItem("cryptex_side_tab") || "overview"; } catch { return "overview"; }
+  });
+  useEffect(() => { try { localStorage.setItem("cryptex_side_tab", sideTab); } catch {} }, [sideTab]);
   const [smc, setSmc] = useState(null);
   const [smcMulti, setSmcMulti] = useState([]);
   const [notif, setNotif] = useState(null);
@@ -1621,7 +1645,19 @@ button:active{transform:scale(.97)}
 .fade-in{animation:fadeUp .35s ease}
 .tab-pane{animation:fadeUp .3s ease}
 @keyframes skeletonPulse{0%,100%{opacity:.4}50%{opacity:.9}}
-.skeleton{animation:skeletonPulse 1.4s ease-in-out infinite;border-radius:8px;background:linear-gradient(90deg,#0d1520,#1a2535,#0d1520)}`}</style>
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.skeleton{border-radius:8px;background:linear-gradient(90deg,#0d1520 25%,#1a2535 50%,#0d1520 75%);background-size:200% 100%;animation:shimmer 1.6s linear infinite}
+@keyframes staggerIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.stagger-item{animation:staggerIn .4s ease backwards}
+.stagger-item:nth-child(1){animation-delay:.02s}
+.stagger-item:nth-child(2){animation-delay:.06s}
+.stagger-item:nth-child(3){animation-delay:.10s}
+.stagger-item:nth-child(4){animation-delay:.14s}
+.stagger-item:nth-child(5){animation-delay:.18s}
+.stagger-item:nth-child(6){animation-delay:.22s}
+.stagger-item:nth-child(7){animation-delay:.26s}
+.stagger-item:nth-child(8){animation-delay:.30s}
+.stagger-item:nth-child(n+9){animation-delay:.34s}`}</style>
 
       {notif && (
         <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, animation: "slideDown .35s ease-out", background: "#0d1520", border: `1.5px solid ${notif.color}`, color: notif.color, borderRadius: 12, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 30px rgba(0,0,0,.6)", maxWidth: "92vw" }}>
@@ -1639,6 +1675,24 @@ button:active{transform:scale(.97)}
           <div style={{ width: 30, height: 30, borderRadius: 9, background: "linear-gradient(135deg,#F7931A,#627EEA)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, boxShadow: "0 0 18px -2px rgba(247,147,26,0.55)" }}>₿</div>
           <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 3, color: "#e6edf3" }}>CRYPTEX</span>
         </div>
+        {!isMobile && (() => {
+          const btc = coins.find((c) => c.name === "BTC");
+          const eth = coins.find((c) => c.name === "ETH");
+          const liqTotal = liquidations.reduce((s, l) => s + l.usd, 0);
+          const Chip = ({ label, value, color }) => (
+            <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+              <span className="mono" style={{ color: "#4a5568", fontSize: 8 }}>{label}</span>
+              <span className="mono" style={{ color: color || "#c9d1d9", fontSize: 11, fontWeight: 700 }}>{value}</span>
+            </div>
+          );
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 16, marginLeft: 20, paddingLeft: 20, borderLeft: "1px solid rgba(255,255,255,0.06)" }}>
+              {btc && <Chip label="BTC" value={`$${btc.price >= 1000 ? (btc.price / 1000).toFixed(2) + "K" : btc.price.toFixed(0)}`} color={(btc.change || 0) >= 0 ? "#26a69a" : "#ef5350"} />}
+              {eth && <Chip label="ETH" value={`$${eth.price.toFixed(0)}`} color={(eth.change || 0) >= 0 ? "#26a69a" : "#ef5350"} />}
+              {liqTotal > 0 && <Chip label="近期爆倉" value={liqTotal >= 1e6 ? `$${(liqTotal / 1e6).toFixed(1)}M` : `$${(liqTotal / 1e3).toFixed(0)}K`} color="#f0b90b" />}
+            </div>
+          );
+        })()}
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginLeft: "auto" }}>
           {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono breathe" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
           <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950", boxShadow: "0 0 8px #3fb950" }} />
@@ -1705,7 +1759,7 @@ button:active{transform:scale(.97)}
           <div className="glass-sub" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "12px 16px", flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div style={{ display: "flex", flexDirection: "column" }}>
-                <CountUp value={displayPrice} decimals={displayPrice > 100 ? 2 : displayPrice > 1 ? 4 : 6} prefix="$" className="mono" style={{ fontSize: 24, fontWeight: 700, color: up ? "#3dd9c4" : "#ff8a87" }} />
+                <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: up ? "#3dd9c4" : "#ff8a87", transition: "color .3s ease" }}>${fmtPr(displayPrice)}</span>
                 <span className="mono" style={{ color: "#5a6b80", fontSize: 10 }}>{selected?.symbol} · 加密貨幣</span>
               </div>
               <div style={{ marginLeft: "auto", textAlign: "right" }}>
@@ -1904,7 +1958,7 @@ button:active{transform:scale(.97)}
                 <Section title={`🟢 適合做多 (${recs.longs.length})`} color="#26a69a">
                   {recs.longs.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做多訊號</div>}
                   {recs.longs.map((r) => (
-                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                    <button key={r.symbol} className="stagger-item lift" onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
                       <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
                       <div style={{ flex: 1, minWidth: 40 }}>
                         <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#26a69a" }} /></div>
@@ -1918,7 +1972,7 @@ button:active{transform:scale(.97)}
                 <Section title={`🔴 適合做空 (${recs.shorts.length})`} color="#ef5350">
                   {recs.shorts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無明確做空訊號</div>}
                   {recs.shorts.map((r) => (
-                    <button key={r.symbol} onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
+                    <button key={r.symbol} className="stagger-item lift" onClick={() => { const c = coins.find((x) => x.symbol === r.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 6, padding: "7px 8px", marginBottom: 4, display: "flex", alignItems: "center", gap: 7, textAlign: "left", cursor: "pointer" }}>
                       <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 60 }}>{r.name}</span>
                       <div style={{ flex: 1, minWidth: 40 }}>
                         <div style={{ height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}><div style={{ width: `${r.confidence}%`, height: "100%", background: "#ef5350" }} /></div>
@@ -1989,7 +2043,7 @@ button:active{transform:scale(.97)}
                     return (
                       <Section key={dir} title={`${title} (${items.length})`} color={col} defaultOpen={dir !== "neutral"}>
                         {items.map((ex) => (
-                          <button key={ex.symbol} onClick={() => { const c = coins.find(x => x.symbol === ex.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${col}33`, borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                          <button key={ex.symbol} className="stagger-item lift" onClick={() => { const c = coins.find(x => x.symbol === ex.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${col}33`, borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                                 <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ex.name}</span>
@@ -2034,7 +2088,7 @@ button:active{transform:scale(.97)}
                     const col = isLongLiq ? "#ef5350" : "#26a69a";
                     const usdStr = liq.usd >= 1e6 ? "$" + (liq.usd / 1e6).toFixed(2) + "M" : "$" + (liq.usd / 1e3).toFixed(0) + "K";
                     return (
-                      <button key={`${liq.symbol}-${liq.ts}-${i}`} onClick={() => { const c = coins.find((x) => x.symbol === liq.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${col}33`, borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "7px 10px", marginBottom: 4, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                      <button key={`${liq.symbol}-${liq.ts}-${i}`} className="fade-in lift" onClick={() => { const c = coins.find((x) => x.symbol === liq.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${col}33`, borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "7px 10px", marginBottom: 4, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
                         <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 56 }}>{liq.name}</span>
                         <span style={{ color: col, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{isLongLiq ? "多單爆倉" : "空單爆倉"}</span>
                         <span style={{ marginLeft: "auto", color: col, fontSize: 12, fontFamily: "monospace", fontWeight: 800 }}>{usdStr}</span>
