@@ -425,7 +425,7 @@ function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 
-function AutoTradeCard({ trade, livePrice }) {
+function AutoTradeCard({ trade, livePrice, onCancel }) {
   const isLong = trade.direction === "long";
   const dirColor = isLong ? "#26a69a" : "#ef5350";
   const dirLabel = isLong ? "做多" : "做空";
@@ -513,10 +513,12 @@ function AutoTradeCard({ trade, livePrice }) {
         </div>
       )}
 
-      {finished && (
+      {finished ? (
         <div style={{ width: "100%", marginTop: 8, background: "#1a2535", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace", textAlign: "center" }}>
           {slHit() ? "已觸及止損，平倉中…" : "已達最終止盈，平倉中…"}
         </div>
+      ) : (
+        <button onClick={() => onCancel && onCancel(trade)} style={{ width: "100%", marginTop: 8, background: "transparent", border: "1px solid #3a4658", borderRadius: 5, color: "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>撤銷此單（沒跟到，不計入回測）</button>
       )}
     </div>
   );
@@ -556,6 +558,7 @@ function AutoTrades({ coins, onNotify }) {
   const [scanProgress, setScanProgress] = useState(null);
   const [lastScanTs, setLastScanTs] = useState(() => loadAutoTradesTs());
   const [livePrices, setLivePrices] = useState({});
+  const cancelledRef = useRef({});
 
   useEffect(() => { saveAutoTrades(data); }, [data]);
   useEffect(() => { saveClosedTrades(closed); }, [closed]);
@@ -647,7 +650,13 @@ function AutoTrades({ coins, onNotify }) {
           });
           const existingSymbols = new Set(stillOpen.map((t) => t.symbol));
           const need = PER_SIDE - stillOpen.length;
-          const newOnes = fresh.filter((t) => !existingSymbols.has(t.symbol)).slice(0, Math.max(0, need)).map((t) => ({ ...t, id: `${t.symbol}-${t.ts}` }));
+          // 跳過 10 分鐘內剛撤銷的幣種，避免立刻補回同一支
+          const now = Date.now();
+          const isRecentlyCancelled = (sym) => {
+            const ts = cancelledRef.current[sym];
+            return ts && (now - ts) < 10 * 60 * 1000;
+          };
+          const newOnes = fresh.filter((t) => !existingSymbols.has(t.symbol) && !isRecentlyCancelled(t.symbol)).slice(0, Math.max(0, need)).map((t) => ({ ...t, id: `${t.symbol}-${t.ts}` }));
           return [...stillOpen, ...newOnes];
         }
         return {
@@ -694,6 +703,16 @@ function AutoTrades({ coins, onNotify }) {
     setClosed([]);
   }
 
+  // 撤銷單：沒跟到的單直接移除，不計入回測/勝率回饋。移除後觸發掃描補齊空位。
+  function cancelTrade(trade) {
+    const side = trade.direction === "long" ? "longs" : "shorts";
+    // 記錄剛撤銷的幣種，短時間內掃描補單時跳過它，避免立刻又補回同一支
+    cancelledRef.current[trade.symbol] = Date.now();
+    setData((prev) => ({ ...prev, [side]: prev[side].filter((t) => t.id !== trade.id) }));
+    // 稍後自動掃描補齊（給 state 更新一點時間）
+    setTimeout(() => { runScan(); }, 300);
+  }
+
   return (
     <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -727,12 +746,12 @@ function AutoTrades({ coins, onNotify }) {
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做多標的</div>}
-        {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} />)}
+        {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
         {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做空標的</div>}
-        {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} />)}
+        {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} />)}
       </Section>
 
       {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
