@@ -685,7 +685,7 @@ function AutoTrades({ coins, onNotify }) {
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🤖 自動推薦單</div>
-          <div style={{ color: "#4a5568", fontSize: 9 }}>全市場掃描 · SMC+AI共識+SNR · 自動平倉(SL/TP/評分<40)</div>
+          <div style={{ color: "#4a5568", fontSize: 9 }}>全市場掃描 · SMC+AI共識+SNR · 自動平倉(SL/TP/評分低於40)</div>
         </div>
         <button onClick={runScan} disabled={scanning} style={{ background: scanning ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: scanning ? 0.5 : 1 }}>{scanning ? "掃描中..." : "↻ 重新掃描"}</button>
       </div>
@@ -727,7 +727,7 @@ function AutoTrades({ coins, onNotify }) {
       <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
         <p style={{ color: "#5a6b80", marginBottom: 4 }}>說明：</p>
         <p>· 進場價=現價，SL=ATR×1.5，TP優先SNR否則ATR(2x/4x/6x)</p>
-        <p>· 自動平倉：觸及SL／最終TP／重新掃描時評分掉到<40</p>
+        <p>· 自動平倉：觸及SL／最終TP／重新掃描時評分掉到低於40</p>
         <p>· 平倉後移到「已結束」區並跳通知，每日回測統計當日效益</p>
       </div>
     </>
