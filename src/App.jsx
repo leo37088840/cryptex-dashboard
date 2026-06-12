@@ -8,6 +8,29 @@ import {
 
 const INTERVALS = ["15m", "1H", "4H", "1D"];
 
+// 數字滾動動畫：value 變動時平滑過渡到新值
+function CountUp({ value, decimals = 0, duration = 600, prefix = "", suffix = "", style, className }) {
+  const [display, setDisplay] = useState(value || 0);
+  useEffect(() => {
+    const start = performance.now();
+    const from = display;
+    const to = Number(value) || 0;
+    if (from === to) return;
+    let raf;
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+      setDisplay(from + (to - from) * eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return <span className={className} style={style}>{prefix}{display.toFixed(decimals)}{suffix}</span>;
+}
+
+
 function useIsMobile() {
   const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth < 760 : false);
   useEffect(() => {
@@ -21,7 +44,7 @@ function useIsMobile() {
 function Section({ title, color = "#58a6ff", badge, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="glass" style={{ borderRadius: 12, overflow: "hidden", marginBottom: 9 }}>
+    <div className="glass" style={{ borderRadius: 12, overflow: "hidden", marginBottom: 11 }}>
       <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", background: "transparent", border: "none", borderBottom: open ? "1px solid rgba(255,255,255,0.06)" : "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", cursor: "pointer" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, boxShadow: `0 0 8px ${color}` }} />
@@ -30,7 +53,7 @@ function Section({ title, color = "#58a6ff", badge, defaultOpen = true, children
         </div>
         <span style={{ color: "#5a6b80", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
       </button>
-      {open && <div style={{ padding: 13 }}>{children}</div>}
+      {open && <div style={{ padding: 14 }}>{children}</div>}
     </div>
   );
 }
@@ -90,11 +113,18 @@ function AICard({ ai, defaultOpen = false }) {
 }
 
 // ═══════════ 評分卡（綜合多空評分） ═══════════════════════════════════════
-function ScoreBadge({ label, value, color }) {
+function ScoreBadge({ label, value, color, pos }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 6 }}>
-      <span style={{ color: "#8b949e", fontSize: 11, fontFamily: "monospace" }}>{label}</span>
-      <span style={{ background: `${color}22`, color, fontSize: 10, fontFamily: "monospace", fontWeight: 700, padding: "2px 8px", borderRadius: 5, border: `1px solid ${color}55` }}>{value}</span>
+    <div style={{ padding: "8px 10px", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ color: "#8b949e", fontSize: 11, fontFamily: "monospace" }}>{label}</span>
+        <span style={{ background: `${color}22`, color, fontSize: 10, fontFamily: "monospace", fontWeight: 700, padding: "2px 8px", borderRadius: 5, border: `1px solid ${color}55` }}>{value}</span>
+      </div>
+      {pos != null && (
+        <div style={{ position: "relative", height: 4, borderRadius: 2, background: "linear-gradient(90deg,#ef5350,#5a6b80,#26a69a)", marginTop: 6, opacity: 0.5 }}>
+          <div style={{ position: "absolute", top: -2, left: `calc(${Math.max(0, Math.min(100, pos))}% - 4px)`, width: 8, height: 8, borderRadius: "50%", background: color, boxShadow: `0 0 6px ${color}` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -143,7 +173,7 @@ function ScoreCard({ symbol, smc, multiAI, hideHeader = false }) {
     <div style={{ marginBottom: 10 }}>
       {!hideHeader && (
         <div style={{ background: `${smc.color}14`, border: `1.5px solid ${smc.color}`, borderRadius: 10, padding: 12, marginBottom: 10, textAlign: "center" }}>
-          <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>📊 綜合評分卡 · {symbol}</div>
+          <div style={{ color: "#5a6b80", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>📊 綜合評分卡 · {symbol}</div>
           <div style={{ fontSize: 20, fontWeight: 800, color: smc.color, fontFamily: "monospace" }}>{smc.signal}</div>
           <div style={{ color: smc.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>信心度 {smc.confidence}%</div>
         </div>
@@ -152,19 +182,19 @@ function ScoreCard({ symbol, smc, multiAI, hideHeader = false }) {
       <Section title="做多/做空依據" color={smc.color} defaultOpen={true}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div>
-            <ScoreBadge label="市場動能" value={momentumLabel} color={momentumColor} />
+            <ScoreBadge label="市場動能" value={momentumLabel} color={momentumColor} pos={momentumLabel === "買方主導" ? 80 : momentumLabel === "賣方主導" ? 20 : 50} />
             <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{smc.structure}</div>
           </div>
           <div>
-            <ScoreBadge label="資金費率" value={fundingLabel} color={fundingColor} />
+            <ScoreBadge label="資金費率" value={fundingLabel} color={fundingColor} pos={fundingLabel === "偏多" ? 75 : fundingLabel === "偏空" ? 25 : 50} />
             <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{fundingDesc}</div>
           </div>
           <div>
-            <ScoreBadge label="散戶/大戶情緒" value={sentimentLabel} color={sentimentColor} />
+            <ScoreBadge label="散戶/大戶情緒" value={sentimentLabel} color={sentimentColor} pos={sentimentLabel === "偏多" ? 75 : sentimentLabel === "偏空" ? 25 : 50} />
             <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{sentimentDesc}</div>
           </div>
           <div>
-            <ScoreBadge label="相對強弱" value={rsLabel} color={rsColor} />
+            <ScoreBadge label="相對強弱" value={rsLabel} color={rsColor} pos={rsLabel === "強於BTC" ? 80 : rsLabel === "弱於BTC" ? 20 : 50} />
             <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>{rsDesc}</div>
           </div>
           {smc.snr && (smc.snr.support || smc.snr.resistance) && (
@@ -177,6 +207,10 @@ function ScoreCard({ symbol, smc, multiAI, hideHeader = false }) {
                 smc.snr.support && smc.snr.support.dist < 1 ? "#26a69a"
                 : smc.snr.resistance && smc.snr.resistance.dist < 1 ? "#ef5350"
                 : "#f0b90b"
+              } pos={
+                smc.snr.support && smc.snr.support.dist < 1 ? 80
+                : smc.snr.resistance && smc.snr.resistance.dist < 1 ? 20
+                : 50
               } />
               <div style={{ color: "#5a6b80", fontSize: 9, padding: "0 2px 6px" }}>
                 {smc.snr.resistance ? `壓力 ${smc.snr.resistance.price.toFixed(smc.snr.resistance.price > 1 ? 4 : 6)} (+${smc.snr.resistance.dist.toFixed(2)}%)` : "—"}
@@ -319,7 +353,7 @@ function TradeCard({ trade, livePrice, onDelete, onClose }) {
   }
 
   return (
-    <div style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+    <div className="card-hover" style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{trade.symbol}</span>
         <span style={{ color: dirColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700, background: `${dirColor}1a`, padding: "1px 6px", borderRadius: 4 }}>{dirLabel}</span>
@@ -410,7 +444,7 @@ function AutoTradeCard({ trade, livePrice, onRemove }) {
   else if (hitTps.length > 0) statusBadge = { label: `${hitTps[hitTps.length - 1][0]} 達成`, color: "#26a69a" };
 
   return (
-    <div style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+    <div className="card-hover" style={{ background: "#0d1520", border: `1px solid ${dirColor}33`, borderLeft: `3px solid ${dirColor}`, borderRadius: 8, padding: 10, marginBottom: 8, boxShadow: finished ? "none" : `inset 3px 0 10px -5px ${dirColor}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>{trade.name || trade.symbol}</span>
         <span style={{ color: dirColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700, background: `${dirColor}1a`, padding: "1px 6px", borderRadius: 4 }}>{dirLabel}</span>
@@ -425,6 +459,24 @@ function AutoTradeCard({ trade, livePrice, onRemove }) {
           <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginLeft: 6 }}>未實現盈虧 · 現價 {fmt(livePrice)}</span>
         </div>
       )}
+
+      {livePrice != null && (() => {
+        const lastTp = tps.length ? tps[tps.length - 1][1] : (isLong ? trade.entry + (trade.entry - trade.sl) * 2 : trade.entry - (trade.sl - trade.entry) * 2);
+        const lo = isLong ? trade.sl : lastTp;
+        const hi = isLong ? lastTp : trade.sl;
+        const range = hi - lo || 1;
+        const clampPct = (v) => Math.max(0, Math.min(100, ((v - lo) / range) * 100));
+        const livePct = clampPct(livePrice);
+        return (
+          <div style={{ position: "relative", height: 6, borderRadius: 3, background: "linear-gradient(90deg,#ef5350,#1a2535,#26a69a)", marginBottom: 8, marginTop: 2 }}>
+            <div style={{ position: "absolute", top: -3, left: `calc(${clampPct(trade.entry)}% - 1px)`, width: 2, height: 12, background: "#5a6b80" }} />
+            {tps.map(([label, val]) => (
+              <div key={label} style={{ position: "absolute", top: -3, left: `calc(${clampPct(val)}% - 1px)`, width: 2, height: 12, background: "#26a69a99" }} />
+            ))}
+            <div style={{ position: "absolute", top: -4, left: `calc(${livePct}% - 5px)`, width: 10, height: 10, borderRadius: "50%", background: dirColor, border: "2px solid #0d1520", boxShadow: `0 0 8px ${dirColor}` }} />
+          </div>
+        );
+      })()}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10, fontFamily: "monospace" }}>
         <div style={{ background: "#0a1218", borderRadius: 5, padding: "5px 8px" }}>
@@ -560,6 +612,12 @@ function AutoTrades({ coins }) {
         </div>
       )}
 
+      {scanning && data.longs.length === 0 && data.shorts.length === 0 && (
+        <div style={{ marginBottom: 10 }}>
+          {[0,1,2].map(i => <div key={i} className="skeleton" style={{ height: 110, marginBottom: 8 }} />)}
+        </div>
+      )}
+
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做多標的</div>}
         {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onRemove={(id) => removeTrade("longs", id)} />)}
@@ -573,7 +631,7 @@ function AutoTrades({ coins }) {
       {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
 
       <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
-        <p style={{ color: "#787b86", marginBottom: 4 }}>說明：</p>
+        <p style={{ color: "#5a6b80", marginBottom: 4 }}>說明：</p>
         <p>· 進場價=現價，SL=ATR×1.5</p>
         <p>· TP優先採用SNR壓力/支撐位，否則用ATR倍數(2x/4x/6x)</p>
         <p>· 評分=SMC信心度40% + AI共識(方向一致)40% + 結構/SNR加分20%</p>
@@ -899,31 +957,44 @@ export default function App() {
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", color: "#c9d1d9", fontFamily: "'Sora',system-ui,sans-serif", overflow: "hidden", background: "radial-gradient(ellipse 90% 55% at 18% -5%, rgba(247,147,26,0.10), transparent 60%), radial-gradient(ellipse 70% 50% at 85% 8%, rgba(98,126,234,0.10), transparent 55%), linear-gradient(180deg,#070c12 0%,#05080c 100%)" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2a3b52,#1a2535);border-radius:3px}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2a3b52,#1a2535);border-radius:3px;transition:background .2s}
+::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#3a5275,#26344a)}
 ::-webkit-scrollbar-track{background:transparent}
-button{cursor:pointer;outline:none;font-family:inherit}
+button{cursor:pointer;outline:none;font-family:inherit;transition:transform .12s ease,filter .15s ease}
+button:active{transform:scale(.97)}
 .mono{font-family:'JetBrains Mono',monospace}
-.glass{background:rgba(13,21,32,0.55);backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);border:1px solid rgba(255,255,255,0.07)}
+.glass{background:rgba(13,21,32,0.55);backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);border:1px solid rgba(255,255,255,0.07);box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),0 4px 18px -8px rgba(0,0,0,0.5)}
 .glass-sub{background:rgba(10,17,26,0.5);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .coin-row{transition:background .18s ease,border-color .18s ease,transform .12s ease}
 .coin-row:hover{background:rgba(88,166,255,0.06)!important;transform:translateX(2px)}
-.tab-btn{transition:color .2s ease,background .2s ease}
-.lift{transition:transform .15s ease,box-shadow .2s ease}
+.tab-btn{transition:color .2s ease,background .2s ease,transform .12s ease}
+.lift{transition:transform .15s ease,box-shadow .2s ease,border-color .2s ease}
 .lift:hover{transform:translateY(-1px)}
+.card-hover{transition:transform .16s ease,box-shadow .2s ease,border-color .2s ease}
+.card-hover:hover{transform:translateY(-2px);box-shadow:0 8px 24px -10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.14)!important}
 @keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 @keyframes glowPulse{0%,100%{box-shadow:0 0 24px -6px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.04)}50%{box-shadow:0 0 40px -4px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.08)}}
+@keyframes glowDriftLong{0%,100%{background-position:50% 30%}50%{background-position:50% 10%}}
+@keyframes glowDriftShort{0%,100%{background-position:50% 70%}50%{background-position:50% 90%}}
 @keyframes ringSpin{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--off)}}
-.signal-card{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite}
-.fade-in{animation:fadeUp .35s ease}`}</style>
+@keyframes breathe{0%,100%{opacity:.55;filter:saturate(.85)}50%{opacity:1;filter:saturate(1.2)}}
+.breathe{animation:breathe 2.6s ease-in-out infinite}
+.signal-card{position:relative;animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite;background-size:160% 160%!important}
+.signal-card.dir-long{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite,glowDriftLong 6s ease-in-out infinite}
+.signal-card.dir-short{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite,glowDriftShort 6s ease-in-out infinite}
+.fade-in{animation:fadeUp .35s ease}
+.tab-pane{animation:fadeUp .3s ease}
+@keyframes skeletonPulse{0%,100%{opacity:.4}50%{opacity:.9}}
+.skeleton{animation:skeletonPulse 1.4s ease-in-out infinite;border-radius:8px;background:linear-gradient(90deg,#0d1520,#1a2535,#0d1520)}`}</style>
 
       {notif && (
         <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, animation: "slideDown .35s ease-out", background: "#0d1520", border: `1.5px solid ${notif.color}`, color: notif.color, borderRadius: 12, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 30px rgba(0,0,0,.6)", maxWidth: "92vw" }}>
           <div style={{ fontSize: 22 }}>{notif.signal.includes("做多") ? "📈" : "📉"}</div>
           <div style={{ flex: 1 }}>
             <div style={{ display: "flex", gap: 8 }}><span style={{ color: "#e6edf3", fontSize: 13, fontWeight: 700, fontFamily: "monospace" }}>{notif.symbol}</span><span style={{ color: notif.color, fontSize: 14, fontWeight: 800, fontFamily: "monospace" }}>{notif.signal}</span></div>
-            <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace" }}>SMC 訊號 · 信心 {notif.confidence}% · {new Date(notif.ts).toLocaleTimeString()}</div>
+            <div style={{ color: "#5a6b80", fontSize: 10, fontFamily: "monospace" }}>SMC 訊號 · 信心 {notif.confidence}% · {new Date(notif.ts).toLocaleTimeString()}</div>
           </div>
           <button onClick={() => setNotif(null)} style={{ background: "transparent", border: "none", color: "#4a5568", fontSize: 18 }}>×</button>
         </div>
@@ -935,7 +1006,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
           <span style={{ fontFamily: "'Sora',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 3, color: "#e6edf3" }}>CRYPTEX</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginLeft: "auto" }}>
-          {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
+          {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono breathe" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
           <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950", boxShadow: "0 0 8px #3fb950" }} />
           <span className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>{status}</span>
         </div>
@@ -967,7 +1038,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
             <SearchInput key="search-box" value={search} onChange={setSearch} />
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
-            {filtered.length === 0 && <div style={{ color: "#354050", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
+            {filtered.length === 0 && <div style={{ color: "#3a4658", fontSize: 10, fontFamily: "monospace", padding: "12px 10px" }}>{status}</div>}
             {visibleList.map((coin) => {
               const live = coins.find((c) => c.symbol === coin.symbol) || coin;
               const active = selected?.symbol === coin.symbol;
@@ -994,7 +1065,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
           <div className="glass-sub" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "12px 16px", flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
               <div style={{ display: "flex", flexDirection: "column" }}>
-                <span className="mono" style={{ fontSize: 24, fontWeight: 700, color: up ? "#3dd9c4" : "#ff8a87" }}>${fmtPr(displayPrice)}</span>
+                <CountUp value={displayPrice} decimals={displayPrice > 100 ? 2 : displayPrice > 1 ? 4 : 6} prefix="$" className="mono" style={{ fontSize: 24, fontWeight: 700, color: up ? "#3dd9c4" : "#ff8a87" }} />
                 <span className="mono" style={{ color: "#5a6b80", fontSize: 10 }}>{selected?.symbol} · 加密貨幣</span>
               </div>
               <div style={{ marginLeft: "auto", textAlign: "right" }}>
@@ -1033,7 +1104,8 @@ button{cursor:pointer;outline:none;font-family:inherit}
           </div>
 
 
-          <div style={{ flex: 1, overflowY: "auto", padding: "10px 12px" }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
+            <div key={sideTab} className="tab-pane">
             {/* SMC */}
             {sideTab === "overview" && <>
               <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1041,29 +1113,47 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 <button onClick={enableNotif} style={{ background: notifOn ? "#26a69a" : "#1a2535", border: "none", borderRadius: 6, color: "#fff", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{notifOn ? "✓ 已開啟" : "開啟通知"}</button>
               </div>
               {smc ? <>
-                <div className="signal-card" style={{ "--glow": `${smc.color}66`, background: `linear-gradient(145deg, ${smc.color}1f, rgba(13,21,32,0.6))`, border: `1px solid ${smc.color}88`, borderRadius: 16, padding: "18px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16 }}>
+                <div className={`signal-card ${smc.signal.includes("做多") ? "dir-long" : smc.signal.includes("做空") ? "dir-short" : ""}`} style={{ "--glow": `${smc.color}66`, background: `linear-gradient(145deg, ${smc.color}1f, rgba(13,21,32,0.6))`, border: `1px solid ${smc.color}88`, borderRadius: 16, padding: "18px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16 }}>
                   <div style={{ position: "relative", width: 76, height: 76, flexShrink: 0 }}>
                     <svg width="76" height="76" style={{ transform: "rotate(-90deg)" }}>
+                      <defs>
+                        <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                          <stop offset="0%" stopColor="#f0b90b" />
+                          <stop offset="100%" stopColor={smc.color} />
+                        </linearGradient>
+                      </defs>
                       <circle cx="38" cy="38" r="32" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
-                      <circle cx="38" cy="38" r="32" fill="none" stroke={smc.color} strokeWidth="6" strokeLinecap="round" strokeDasharray={2 * Math.PI * 32} strokeDashoffset={2 * Math.PI * 32 * (1 - (smc.confidence || 0) / 100)} style={{ transition: "stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)", filter: `drop-shadow(0 0 4px ${smc.color})` }} />
+                      <circle cx="38" cy="38" r="32" fill="none" stroke="url(#ringGrad)" strokeWidth="6" strokeLinecap="round" strokeDasharray={2 * Math.PI * 32} strokeDashoffset={2 * Math.PI * 32 * (1 - (smc.confidence || 0) / 100)} style={{ transition: "stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)", filter: `drop-shadow(0 0 5px ${smc.color})` }} />
+                      {(() => {
+                        const ang = (-90 + (smc.confidence || 0) / 100 * 360) * Math.PI / 180;
+                        const cx = 38 + 32 * Math.cos(ang), cy = 38 + 32 * Math.sin(ang);
+                        return <circle cx={cx} cy={cy} r="3.5" fill="#fff" style={{ filter: `drop-shadow(0 0 4px ${smc.color})`, transition: "all .8s cubic-bezier(.4,0,.2,1)" }} />;
+                      })()}
                     </svg>
                     <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                      <span className="mono" style={{ color: smc.color, fontSize: 18, fontWeight: 700, lineHeight: 1 }}>{smc.confidence}</span>
+                      <CountUp value={smc.confidence} className="mono" style={{ color: smc.color, fontSize: 18, fontWeight: 700, lineHeight: 1 }} />
                       <span className="mono" style={{ color: "#5a6b80", fontSize: 8 }}>信心</span>
                     </div>
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="mono" style={{ color: "#5a6b80", fontSize: 9, marginBottom: 5, letterSpacing: 1 }}>SMC 綜合訊號 · {selected?.symbol} · {tf}</div>
-                    <div style={{ color: smc.color, fontSize: 30, fontWeight: 800, fontFamily: "'Sora',sans-serif", letterSpacing: 1, lineHeight: 1, textShadow: `0 0 20px ${smc.color}55` }}>{smc.signal}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className={smc.signal.includes("做多") || smc.signal.includes("做空") ? "breathe" : ""} style={{ color: smc.color, fontSize: 26, lineHeight: 1, textShadow: `0 0 16px ${smc.color}88` }}>
+                        {smc.signal.includes("做多") ? "▲" : smc.signal.includes("做空") ? "▼" : "—"}
+                      </span>
+                      <div style={{ color: smc.color, fontSize: 28, fontWeight: 800, fontFamily: "'Sora',sans-serif", letterSpacing: 1, lineHeight: 1, textShadow: `0 0 20px ${smc.color}55` }}>{smc.signal}</div>
+                    </div>
                   </div>
                 </div>
 
-                {multiAILoading && !multiAI && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px", textAlign: "center" }}>5 個 AI 派系分析中...</div>}
+                {multiAILoading && !multiAI && <div>
+                  {[0,1,2].map(i => <div key={i} className="skeleton" style={{ height: 36, marginBottom: 6 }} />)}
+                </div>}
                 {multiAI && multiAI.length > 0 && (() => {
                   const consensus = multiAI[multiAI.length - 1];
                   return (
                     <div style={{ background: `${consensus.color}14`, border: `1.5px solid ${consensus.color}`, borderRadius: 10, padding: 12, marginBottom: 12, textAlign: "center" }}>
-                      <div style={{ color: "#787b86", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識 · {selected?.symbol}</div>
+                      <div style={{ color: "#5a6b80", fontSize: 10, fontFamily: "monospace", marginBottom: 4 }}>🧠 AI 共識 · {selected?.symbol}</div>
                       <div style={{ fontSize: 20, fontWeight: 800, color: consensus.color, fontFamily: "monospace" }}>{consensus.direction}</div>
                       <div style={{ color: consensus.color, fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>共識信心 {consensus.confidence}%</div>
                     </div>
@@ -1104,7 +1194,11 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 <Section title="判斷依據" color="#f0e68c" defaultOpen={false}>
                   {smc.reasons.length ? smc.reasons.map((r, i) => <div key={i} style={{ color: "#c9d1d9", fontSize: 11, lineHeight: 1.6, padding: "3px 0" }}><span style={{ color: "#4a5568" }}>{i + 1}. </span>{r}</div>) : <div style={{ color: "#4a5568", fontSize: 11 }}>無明確訊號，建議觀望。</div>}
                 </Section>
-              </> : <div style={{ color: "#4a5568", fontSize: 11, fontFamily: "monospace", padding: "20px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>}
+              </> : <div>
+                <div className="skeleton" style={{ height: 90, marginBottom: 11 }} />
+                <div className="skeleton" style={{ height: 50, marginBottom: 11 }} />
+                <div style={{ color: "#5a6b80", fontSize: 11, fontFamily: "monospace", padding: "8px 4px", textAlign: "center" }}>正在分析 K 線 SMC 結構...</div>
+              </div>}
             </>}
 
             {/* 交易 */}
@@ -1219,7 +1313,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
                   ))}
                 </Section>
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
-                  <p style={{ color: "#787b86", marginBottom: 4 }}>判讀說明：</p>
+                  <p style={{ color: "#5a6b80", marginBottom: 4 }}>判讀說明：</p>
                   <p>· <span style={{ color: "#26a69a" }}>多頭觸發</span>：OI 暴增 + 價漲</p>
                   <p>· <span style={{ color: "#ef5350" }}>空頭觸發</span>：OI 暴增 + 價跌</p>
                   <p>· <span style={{ color: "#ef5350" }}>誘空</span>：OI 增 + 價跌</p>
@@ -1274,7 +1368,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 </>}
                 {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>準備自動掃描中...</div>}
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
-                  <p style={{ color: "#787b86", marginBottom: 4 }}>評分說明（滿分 100）：</p>
+                  <p style={{ color: "#5a6b80", marginBottom: 4 }}>評分說明（滿分 100）：</p>
                   <p>· OI 暴增 >5% → +15</p>
                   <p>· Funding 極值 → +20</p>
                   <p>· 布林帶擠壓（能量蓄積）→ +20</p>
@@ -1298,7 +1392,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
                 {Array.isArray(j10flash) && j10flash.map((n, i) => (
                   <div key={i} style={{ padding: "7px 0", borderBottom: i < j10flash.length - 1 ? "1px solid #111824" : "none" }}>
                     <div style={{ display: "flex", gap: 7 }}>
-                      <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
+                      <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", minWidth: 38, flexShrink: 0 }}>{fmtFeedTime(n.time)}</span>
                       <span style={{ color: n.important ? "#ef5350" : "#c9d1d9", fontSize: 11, lineHeight: 1.5, fontWeight: n.important ? 700 : 400 }}>{n.text}</span>
                     </div>
                   </div>
@@ -1323,6 +1417,7 @@ button{cursor:pointer;outline:none;font-family:inherit}
               <p>每 5 分鐘全量掃描推薦清單；每 3 分鐘全量掃 OI 異常警報。</p>
             </div>}
             </>}
+            </div>
           </div>
         </div>
       </div>
