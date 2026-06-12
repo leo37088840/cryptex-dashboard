@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import {
   loadMarket, loadKlines, analyzeSMC, analyzeSMCMulti,
   calcSMA, calcMACD, calcRSI, calcKDJ,
-  loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges,
+  loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges, subscribeLiquidations,
   scanRecommendations, scanAnomalies, analyzeMultiAI, scanExplosive, scanAutoTrades, backtestMTF,
 } from "./data.js";
 
@@ -615,7 +615,21 @@ function AutoTrades({ coins, onNotify }) {
     setScanning(true);
     setScanProgress({ stage: 1, done: 0, total: coins.length });
     try {
-      const r = await scanAutoTrades(coins, coins.length, PER_SIDE, (p) => setScanProgress(p));
+      // 從已結束單算歷史勝率權重（回饋到評分）
+      const weights = (() => {
+        if (!closed || closed.length < 3) return null;
+        const byStruc = {}, byDir = {};
+        closed.forEach((t) => {
+          const win = t.pnlPct >= 0;
+          const struc = (t.structure || "").split(" ")[0];
+          const dir = t.direction === "long" ? "做多" : "做空";
+          if (struc) { (byStruc[struc] = byStruc[struc] || { w: 0, n: 0 }); byStruc[struc].n++; if (win) byStruc[struc].w++; }
+          (byDir[dir] = byDir[dir] || { w: 0, n: 0 }); byDir[dir].n++; if (win) byDir[dir].w++;
+        });
+        const finalize = (m) => { const o = {}; Object.keys(m).forEach((k) => { o[k] = { n: m[k].n, winRate: m[k].n ? (m[k].w / m[k].n) * 100 : 0 }; }); return o; };
+        return { structure: finalize(byStruc), direction: finalize(byDir) };
+      })();
+      const r = await scanAutoTrades(coins, coins.length, PER_SIDE, (p) => setScanProgress(p), weights);
       // 新掃描結果建立 symbol→finalScore 對照，用於評分過低平倉
       const freshScore = {};
       [...r.longs, ...r.shorts].forEach((t) => { freshScore[t.symbol] = t.finalScore; });
@@ -1257,6 +1271,7 @@ export default function App() {
   const [watchlist, setWatchlist] = useState(() => loadWatchlist());
   const [priceAlerts, setPriceAlerts] = useState(() => loadPriceAlerts());
   const [showWatchOnly, setShowWatchOnly] = useState(false);
+  const [liquidations, setLiquidations] = useState([]);
 
   const lastSig = useRef(null);
   const alertFiredRef = useRef({});
@@ -1344,6 +1359,21 @@ export default function App() {
     run(); const iv = setInterval(run, 60000);
     return () => { cancel = true; clearInterval(iv); };
   }, []);
+
+  // 大額爆倉即時流（全市場強平，門檻 5 萬鎂）
+  useEffect(() => {
+    const off = subscribeLiquidations((liq) => {
+      setLiquidations((prev) => [liq, ...prev].slice(0, 60));
+      // 超大額（50萬鎂以上）跳通知
+      if (liq.usd >= 500000 && notifOn) {
+        const p = { signal: `💥 大額爆倉 ${liq.side === "long" ? "多單" : "空單"} $${(liq.usd / 1e6).toFixed(2)}M`, color: liq.side === "long" ? "#ef5350" : "#26a69a", symbol: liq.symbol, ts: Date.now(), confidence: 0 };
+        setNotif(p);
+        setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
+      }
+    }, 50000);
+    return () => off();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifOn]);
 
   // 載入 K 線（後台用，給指標/SMC/AI 計算，UI 不畫圖）
   useEffect(() => {
@@ -1828,7 +1858,7 @@ button:active{transform:scale(.97)}
             {sideTab === "scan" && <>
               {/* 子標籤 */}
               <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                {[["recs", "🎯 推薦"], ["alerts", "⚡ 警報"], ["explosive", "🚀 爆發掃描"]].map(([id, label]) => (
+                {[["recs", "🎯 推薦"], ["alerts", "⚡ 警報"], ["explosive", "🚀 爆發"], ["liq", "💥 爆倉"]].map(([id, label]) => (
                   <button key={id} onClick={() => setAlertSubTab(id)} style={{ flex: 1, background: alertSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${alertSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: alertSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
                 ))}
               </div>
@@ -1969,6 +1999,36 @@ button:active{transform:scale(.97)}
                   <p>· 成交量暴增 2 倍以上 → +10</p>
                   <p>· SMC 方向確認 → +10~20</p>
                   <p>· 貼近SNR支撐/壓力 → +10</p>
+                </div>
+              </>}
+
+              {/* 大額爆倉子頁 */}
+              {alertSubTab === "liq" && <>
+                <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>💥 全市場大額爆倉</div>
+                  <div style={{ color: "#4a5568", fontSize: 9 }}>Binance 即時強平流 · 門檻 $50K · 超過 $500K 跳通知</div>
+                </div>
+                <Section title={`即時爆倉 (${liquidations.length})`} color="#ef5350" badge="LIVE" defaultOpen={true}>
+                  {liquidations.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>等待大額爆倉中...（連線後即時推送）</div>}
+                  {liquidations.map((liq, i) => {
+                    const isLongLiq = liq.side === "long";
+                    const col = isLongLiq ? "#ef5350" : "#26a69a";
+                    const usdStr = liq.usd >= 1e6 ? "$" + (liq.usd / 1e6).toFixed(2) + "M" : "$" + (liq.usd / 1e3).toFixed(0) + "K";
+                    return (
+                      <button key={`${liq.symbol}-${liq.ts}-${i}`} onClick={() => { const c = coins.find((x) => x.symbol === liq.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${col}33`, borderLeft: `3px solid ${col}`, borderRadius: 6, padding: "7px 10px", marginBottom: 4, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
+                        <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 56 }}>{liq.name}</span>
+                        <span style={{ color: col, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{isLongLiq ? "多單爆倉" : "空單爆倉"}</span>
+                        <span style={{ marginLeft: "auto", color: col, fontSize: 12, fontFamily: "monospace", fontWeight: 800 }}>{usdStr}</span>
+                        <span style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", minWidth: 44, textAlign: "right" }}>{new Date(liq.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                      </button>
+                    );
+                  })}
+                </Section>
+                <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px" }}>
+                  <p style={{ color: "#5a6b80", marginBottom: 4 }}>判讀：</p>
+                  <p>· <span style={{ color: "#ef5350" }}>多單爆倉</span>：價格下殺，多頭被強制平倉（可能加速下跌或見底）</p>
+                  <p>· <span style={{ color: "#26a69a" }}>空單爆倉</span>：價格急拉，空頭被強制平倉（可能軋空或見頂）</p>
+                  <p>· 大量同向爆倉常出現在行情轉折或瀑布,可搭配SMC訊號判斷</p>
                 </div>
               </>}
             </>}
