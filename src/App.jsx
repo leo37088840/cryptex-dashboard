@@ -398,6 +398,7 @@ function TradeCard({ trade, livePrice, onDelete, onClose }) {
 // ═══════════ 自動推薦單（系統自動掃描+建單+監控） ═══════════════════════════
 const AUTO_TRADES_KEY = "cryptex_auto_trades_v1";
 const AUTO_TRADES_TS_KEY = "cryptex_auto_trades_ts_v1";
+const AUTO_CLOSED_KEY = "cryptex_auto_closed_v1";
 
 function loadAutoTrades() {
   try {
@@ -408,6 +409,15 @@ function loadAutoTrades() {
 function saveAutoTrades(data) {
   try { localStorage.setItem(AUTO_TRADES_KEY, JSON.stringify(data)); } catch {}
 }
+function loadClosedTrades() {
+  try {
+    const raw = localStorage.getItem(AUTO_CLOSED_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+function saveClosedTrades(arr) {
+  try { localStorage.setItem(AUTO_CLOSED_KEY, JSON.stringify(arr)); } catch {}
+}
 function loadAutoTradesTs() {
   try { return parseInt(localStorage.getItem(AUTO_TRADES_TS_KEY) || "0", 10); } catch { return 0; }
 }
@@ -415,7 +425,7 @@ function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 
-function AutoTradeCard({ trade, livePrice, onRemove }) {
+function AutoTradeCard({ trade, livePrice }) {
   const isLong = trade.direction === "long";
   const dirColor = isLong ? "#26a69a" : "#ef5350";
   const dirLabel = isLong ? "做多" : "做空";
@@ -504,29 +514,54 @@ function AutoTradeCard({ trade, livePrice, onRemove }) {
       )}
 
       {finished && (
-        <button onClick={() => onRemove(trade.id)} style={{ width: "100%", marginTop: 8, background: "#1a2535", border: "none", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>
-          {slHit() ? "已觸及止損，移除" : "已達最終止盈，移除"}
-        </button>
+        <div style={{ width: "100%", marginTop: 8, background: "#1a2535", borderRadius: 5, color: "#8b949e", padding: "5px 0", fontSize: 10, fontFamily: "monospace", textAlign: "center" }}>
+          {slHit() ? "已觸及止損，平倉中…" : "已達最終止盈，平倉中…"}
+        </div>
       )}
     </div>
   );
 }
 
-function AutoTrades({ coins }) {
+// 計算單子結果（用平倉價 vs 進場/SL 算 R 與報酬%）
+function computeOutcome(trade, exitPrice, reason) {
+  const isLong = trade.direction === "long";
+  const risk = Math.abs(trade.entry - trade.sl) || (trade.entry * 0.01);
+  const pnlPct = isLong ? ((exitPrice - trade.entry) / trade.entry) * 100 : ((trade.entry - exitPrice) / trade.entry) * 100;
+  const rMultiple = isLong ? (exitPrice - trade.entry) / risk : (trade.entry - exitPrice) / risk;
+  return { ...trade, exitPrice, exitReason: reason, pnlPct, rMultiple, closedTs: Date.now() };
+}
+
+// 評估某張單在現價下是否該平倉，回傳 {price, reason} 或 null
+function evalClose(trade, livePrice, currentScore) {
+  if (livePrice == null) return null;
+  const isLong = trade.direction === "long";
+  const slHit = isLong ? livePrice <= trade.sl : livePrice >= trade.sl;
+  if (slHit) return { price: trade.sl, reason: "止損" };
+  const tps = [trade.tp1, trade.tp2, trade.tp3].filter((x) => x != null);
+  const allTpHit = tps.length > 0 && tps.every((tp) => isLong ? livePrice >= tp : livePrice <= tp);
+  if (allTpHit) return { price: tps[tps.length - 1], reason: "止盈" };
+  if (currentScore != null && currentScore < 40) return { price: livePrice, reason: "評分過低" };
+  return null;
+}
+
+function AutoTrades({ coins, onNotify }) {
   const [data, setData] = useState(() => {
     const d = loadAutoTrades();
-    // 補上 id（相容舊資料）
     d.longs = (d.longs || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
     d.shorts = (d.shorts || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
     return d;
   });
+  const [closed, setClosed] = useState(() => loadClosedTrades());
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(null);
   const [lastScanTs, setLastScanTs] = useState(() => loadAutoTradesTs());
   const [livePrices, setLivePrices] = useState({});
 
   useEffect(() => { saveAutoTrades(data); }, [data]);
+  useEffect(() => { saveClosedTrades(closed); }, [closed]);
   useEffect(() => { saveAutoTradesTs(lastScanTs); }, [lastScanTs]);
+
+  const PER_SIDE = 5;
 
   // 即時價格（用 coins 列表）
   useEffect(() => {
@@ -539,7 +574,41 @@ function AutoTrades({ coins }) {
     setLivePrices((prev) => ({ ...prev, ...map }));
   }, [coins, data]);
 
-  const PER_SIDE = 5;
+  // 監控自動平倉：價格觸及 SL / 最終TP 時自動移到已結束區並通知
+  useEffect(() => {
+    if (!coins || !coins.length) return;
+    const priceOf = (t) => coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""))?.price;
+    const toClose = [];
+    ["longs", "shorts"].forEach((side) => {
+      data[side].forEach((t) => {
+        const live = priceOf(t);
+        const res = evalClose(t, live, null); // 價格觸發不看評分
+        if (res) toClose.push({ side, trade: t, ...res });
+      });
+    });
+    if (toClose.length === 0) return;
+    setData((prev) => {
+      const next = { longs: [...prev.longs], shorts: [...prev.shorts] };
+      toClose.forEach(({ side, trade }) => {
+        next[side] = next[side].filter((x) => x.id !== trade.id);
+      });
+      return next;
+    });
+    setClosed((prev) => {
+      const add = toClose.map(({ trade, price, reason }) => computeOutcome(trade, price, reason));
+      return [...add, ...prev].slice(0, 500);
+    });
+    toClose.forEach(({ trade, price, reason }) => {
+      const win = (trade.direction === "long" ? price >= trade.entry : price <= trade.entry);
+      if (onNotify) onNotify({
+        symbol: trade.name || trade.symbol,
+        signal: `自動平倉 · ${reason}`,
+        color: reason === "止損" ? "#ef5350" : win ? "#26a69a" : "#f0b90b",
+        confidence: trade.finalScore,
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePrices]);
 
   async function runScan() {
     if (!coins || !coins.length || scanning) return;
@@ -547,25 +616,47 @@ function AutoTrades({ coins }) {
     setScanProgress({ stage: 1, done: 0, total: coins.length });
     try {
       const r = await scanAutoTrades(coins, coins.length, PER_SIDE, (p) => setScanProgress(p));
+      // 新掃描結果建立 symbol→finalScore 對照，用於評分過低平倉
+      const freshScore = {};
+      [...r.longs, ...r.shorts].forEach((t) => { freshScore[t.symbol] = t.finalScore; });
+
+      const closeList = [];
       setData((prev) => {
-        // 補空位：保留現有未結束的單，只在不足 PER_SIDE 時用新掃描結果補滿
-        function fillSide(existing, fresh) {
+        function processSide(side, existing, fresh) {
+          // 先檢查現有單是否該平倉（價格觸發 or 評分<40）
           const stillOpen = existing.filter((t) => {
             const live = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""))?.price;
-            if (!live) return true; // 抓不到價就先保留
-            const isLong = t.direction === "long";
-            const slHit = isLong ? live <= t.sl : live >= t.sl;
-            const tps = [t.tp1, t.tp2, t.tp3].filter((x) => x != null);
-            const allTpHit = tps.length > 0 && tps.every((tp) => isLong ? live >= tp : live <= tp);
-            return !slHit && !allTpHit;
+            const curScore = freshScore[t.symbol]; // 若這次沒掃到，視為仍有效（undefined→不平倉）
+            const res = evalClose(t, live, curScore != null ? curScore : null);
+            if (res) { closeList.push({ side, trade: t, ...res }); return false; }
+            return true;
           });
           const existingSymbols = new Set(stillOpen.map((t) => t.symbol));
           const need = PER_SIDE - stillOpen.length;
           const newOnes = fresh.filter((t) => !existingSymbols.has(t.symbol)).slice(0, Math.max(0, need)).map((t) => ({ ...t, id: `${t.symbol}-${t.ts}` }));
           return [...stillOpen, ...newOnes];
         }
-        return { longs: fillSide(prev.longs, r.longs), shorts: fillSide(prev.shorts, r.shorts) };
+        return {
+          longs: processSide("longs", prev.longs, r.longs),
+          shorts: processSide("shorts", prev.shorts, r.shorts),
+        };
       });
+
+      if (closeList.length > 0) {
+        setClosed((prev) => {
+          const add = closeList.map(({ trade, price, reason }) => computeOutcome(trade, price, reason));
+          return [...add, ...prev].slice(0, 500);
+        });
+        closeList.forEach(({ trade, price, reason }) => {
+          const win = (trade.direction === "long" ? price >= trade.entry : price <= trade.entry);
+          if (onNotify) onNotify({
+            symbol: trade.name || trade.symbol,
+            signal: `自動平倉 · ${reason}`,
+            color: reason === "止損" ? "#ef5350" : win ? "#26a69a" : "#f0b90b",
+            confidence: trade.finalScore,
+          });
+        });
+      }
       setLastScanTs(Date.now());
     } catch {}
     setScanning(false);
@@ -585,8 +676,8 @@ function AutoTrades({ coins }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coins]);
 
-  function removeTrade(side, id) {
-    setData((prev) => ({ ...prev, [side]: prev[side].filter((t) => t.id !== id) }));
+  function clearClosed() {
+    setClosed([]);
   }
 
   return (
@@ -594,7 +685,7 @@ function AutoTrades({ coins }) {
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ color: "#c9d1d9", fontSize: 11, fontWeight: 700 }}>🤖 自動推薦單</div>
-          <div style={{ color: "#4a5568", fontSize: 9 }}>全市場掃描 · SMC+AI共識+SNR 綜合評分 · 每5分鐘檢查補位</div>
+          <div style={{ color: "#4a5568", fontSize: 9 }}>全市場掃描 · SMC+AI共識+SNR · 自動平倉(SL/TP/評分<40)</div>
         </div>
         <button onClick={runScan} disabled={scanning} style={{ background: scanning ? "#1a2535" : "#f0b90b", border: "none", borderRadius: 6, color: "#000", padding: "6px 12px", fontSize: 11, fontFamily: "monospace", fontWeight: 700, opacity: scanning ? 0.5 : 1 }}>{scanning ? "掃描中..." : "↻ 重新掃描"}</button>
       </div>
@@ -620,28 +711,114 @@ function AutoTrades({ coins }) {
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做多標的</div>}
-        {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onRemove={(id) => removeTrade("longs", id)} />)}
+        {data.longs.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
         {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>暫無符合條件的做空標的</div>}
-        {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onRemove={(id) => removeTrade("shorts", id)} />)}
+        {data.shorts.map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} />)}
       </Section>
 
       {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
 
+      <ClosedTradesSection closed={closed} />
+      <DailyBacktest closed={closed} onClear={clearClosed} />
+
       <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
         <p style={{ color: "#5a6b80", marginBottom: 4 }}>說明：</p>
-        <p>· 進場價=現價，SL=ATR×1.5</p>
-        <p>· TP優先採用SNR壓力/支撐位，否則用ATR倍數(2x/4x/6x)</p>
-        <p>· 評分=SMC信心度40% + AI共識(方向一致)40% + 結構/SNR加分20%</p>
-        <p>· 單子觸及SL或最終TP前不會被替換，只補空位</p>
+        <p>· 進場價=現價，SL=ATR×1.5，TP優先SNR否則ATR(2x/4x/6x)</p>
+        <p>· 自動平倉：觸及SL／最終TP／重新掃描時評分掉到<40</p>
+        <p>· 平倉後移到「已結束」區並跳通知，每日回測統計當日效益</p>
       </div>
     </>
   );
 }
 
-function TradeJournal({ coins, defaultSymbol }) {
+// 已結束單列表（可收合）
+function ClosedTradesSection({ closed }) {
+  if (!closed || closed.length === 0) return null;
+  const fmt = (v) => v == null ? "—" : (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+  const reasonColor = (r) => r === "止盈" ? "#26a69a" : r === "止損" ? "#ef5350" : "#f0b90b";
+  return (
+    <Section title={`📁 已結束 (${closed.length})`} color="#5a6b80" defaultOpen={false}>
+      {closed.slice(0, 30).map((t) => {
+        const isLong = t.direction === "long";
+        const win = t.pnlPct >= 0;
+        return (
+          <div key={t.id + "-" + t.closedTs} style={{ background: "#0a1218", border: "1px solid #1a2535", borderLeft: `3px solid ${reasonColor(t.exitReason)}`, borderRadius: 6, padding: "7px 9px", marginBottom: 5 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{t.name || t.symbol}</span>
+              <span style={{ color: isLong ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>{isLong ? "多" : "空"}</span>
+              <span style={{ color: reasonColor(t.exitReason), fontSize: 9, fontFamily: "monospace", border: `1px solid ${reasonColor(t.exitReason)}`, borderRadius: 3, padding: "0 4px" }}>{t.exitReason}</span>
+              <span style={{ marginLeft: "auto", color: win ? "#26a69a" : "#ef5350", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{win ? "+" : ""}{t.pnlPct.toFixed(2)}%</span>
+              <span style={{ color: win ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>({t.rMultiple >= 0 ? "+" : ""}{t.rMultiple.toFixed(2)}R)</span>
+            </div>
+            <div style={{ color: "#4a5568", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>
+              進 {fmt(t.entry)} → 出 {fmt(t.exitPrice)} · {new Date(t.closedTs).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+            </div>
+          </div>
+        );
+      })}
+    </Section>
+  );
+}
+
+// 每日回測：按日期統計自動推薦單的效益
+function DailyBacktest({ closed, onClear }) {
+  const days = useMemo(() => {
+    const map = new Map();
+    (closed || []).forEach((t) => {
+      const d = new Date(t.closedTs);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(t);
+    });
+    return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0])).map(([date, trades]) => {
+      const wins = trades.filter((t) => t.pnlPct >= 0);
+      const totalR = trades.reduce((s, t) => s + (t.rMultiple || 0), 0);
+      const totalPnl = trades.reduce((s, t) => s + (t.pnlPct || 0), 0);
+      return {
+        date,
+        count: trades.length,
+        wins: wins.length,
+        losses: trades.length - wins.length,
+        winRate: trades.length ? (wins.length / trades.length) * 100 : 0,
+        totalR,
+        totalPnl,
+      };
+    });
+  }, [closed]);
+
+  return (
+    <Section title="📅 每日開單回測" color="#a78bfa" defaultOpen={true}>
+      {days.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "8px 4px" }}>尚無已結束單，等自動推薦單觸發平倉後統計。</div>}
+      {days.map((d) => (
+        <div key={d.date} style={{ background: "#0a1218", border: "1px solid #1a2535", borderRadius: 6, padding: "8px 10px", marginBottom: 5 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{d.date}</span>
+            <span style={{ marginLeft: "auto", color: d.totalR >= 0 ? "#26a69a" : "#ef5350", fontSize: 12, fontFamily: "monospace", fontWeight: 800 }}>{d.totalR >= 0 ? "+" : ""}{d.totalR.toFixed(2)}R</span>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ color: "#8b949e", fontSize: 9, fontFamily: "monospace" }}>開單 {d.count}</span>
+            <span style={{ color: "#26a69a", fontSize: 9, fontFamily: "monospace" }}>勝 {d.wins}</span>
+            <span style={{ color: "#ef5350", fontSize: 9, fontFamily: "monospace" }}>負 {d.losses}</span>
+            <span style={{ color: "#f0b90b", fontSize: 9, fontFamily: "monospace" }}>勝率 {d.winRate.toFixed(0)}%</span>
+            <span style={{ color: d.totalPnl >= 0 ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>累積 {d.totalPnl >= 0 ? "+" : ""}{d.totalPnl.toFixed(1)}%</span>
+          </div>
+          <div style={{ marginTop: 5, height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden", display: "flex" }}>
+            <div style={{ width: `${d.winRate}%`, background: "#26a69a" }} />
+            <div style={{ width: `${100 - d.winRate}%`, background: "#ef5350" }} />
+          </div>
+        </div>
+      ))}
+      {days.length > 0 && (
+        <button onClick={onClear} style={{ width: "100%", marginTop: 4, background: "#1a2535", border: "none", borderRadius: 5, color: "#8b949e", padding: "6px 0", fontSize: 10, fontFamily: "monospace" }}>清除回測紀錄</button>
+      )}
+    </Section>
+  );
+}
+
+function TradeJournal({ coins, defaultSymbol, onNotify }) {
   const [journalSubTab, setJournalSubTab] = useState("auto");
   const [trades, setTrades] = useState(() => loadTrades());
   const [showForm, setShowForm] = useState(false);
@@ -683,7 +860,7 @@ function TradeJournal({ coins, defaultSymbol }) {
         ))}
       </div>
 
-      {journalSubTab === "auto" && <AutoTrades coins={coins} />}
+      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} />}
 
       {journalSubTab === "manual" && <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -957,6 +1134,16 @@ export default function App() {
     try { const p = await Notification.requestPermission(); setNotifOn(true); if (p === "granted") new Notification("✅ 通知已開啟", { body: "SMC 多空訊號將即時通知你" }); } catch { setNotifOn(true); }
   }
 
+  // 通用橫幅通知（給自動平倉等使用）
+  function pushNotif({ symbol, signal, color, confidence }) {
+    const p = { signal, color, symbol, ts: Date.now(), confidence };
+    setNotif(p);
+    if (notifOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      try { new Notification(`🔔 ${symbol}`, { body: signal }); } catch {}
+    }
+    setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
+  }
+
   const indData = (() => {
     if (candles.length < 30) return null;
     const closes = candles.map((c) => c.c), highs = candles.map((c) => c.h), lows = candles.map((c) => c.l), vols = candles.map((c) => c.v), n = closes.length - 1;
@@ -1226,7 +1413,7 @@ button:active{transform:scale(.97)}
 
             {/* 交易 */}
             {sideTab === "journal" && (
-              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} />
+              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} onNotify={pushNotif} />
             )}
 
             {sideTab === "indicators" && indData && <>
