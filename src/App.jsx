@@ -1993,7 +1993,7 @@ button:active{transform:scale(.97)}
                 {!explosive && !explosiveLoading && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}>準備自動掃描中...</div>}
                 <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "8px 4px", marginTop: 4 }}>
                   <p style={{ color: "#5a6b80", marginBottom: 4 }}>評分說明（滿分 100）：</p>
-                  <p>· OI 暴增 >5% → +15</p>
+                  <p>· OI 暴增 超過5% → +15</p>
                   <p>· Funding 極值 → +20</p>
                   <p>· 布林帶擠壓（能量蓄積）→ +20</p>
                   <p>· 成交量暴增 2 倍以上 → +10</p>
