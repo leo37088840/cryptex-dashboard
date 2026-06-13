@@ -52,6 +52,35 @@ function scoreColor(v) {
   return "#ef5350";
 }
 
+// 價格依幣值自動決定小數位
+function fmtPrice(v) {
+  if (v == null || isNaN(v)) return "—";
+  if (v >= 1000) return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (v >= 1) return v.toFixed(4);
+  if (v >= 0.01) return v.toFixed(5);
+  return v.toFixed(7);
+}
+// 大數字加千分位/單位
+function fmtNum(v) {
+  if (v == null || isNaN(v)) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (abs >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (abs >= 1e3) return (v / 1e3).toFixed(2) + "K";
+  return Math.round(v).toLocaleString("en-US");
+}
+
+// 統一空狀態
+function EmptyState({ icon = "📭", text, hint }) {
+  return (
+    <div style={{ color: "#4a5568", fontSize: 11, padding: "24px 12px", textAlign: "center" }}>
+      <div style={{ fontSize: 26, opacity: 0.35, marginBottom: 6 }}>{icon}</div>
+      <div style={{ color: "#5a6b80" }}>{text}</div>
+      {hint && <div style={{ color: "#3a4658", fontSize: 9, marginTop: 4 }}>{hint}</div>}
+    </div>
+  );
+}
+
 function useIsMobile() {
   const [m, setM] = useState(typeof window !== "undefined" ? window.innerWidth < 760 : false);
   useEffect(() => {
@@ -314,12 +343,37 @@ function ScoreCard({ symbol, smc, multiAI, hideHeader = false }) {
         </div>
       </Section>
 
+      {(() => {
+        // 進場時機提示：依方向與 SNR 距離判斷追高/追空風險或理想進場
+        const isLong = smc.signal.includes("做多");
+        const isShort = smc.signal.includes("做空");
+        if (!isLong && !isShort || !smc.snr) return null;
+        let tip = null, tColor = "#f0b90b", tIcon = "⏱️";
+        if (isLong) {
+          const supDist = smc.snr.support?.dist;
+          const resDist = smc.snr.resistance?.dist;
+          if (supDist != null && supDist < 1) { tip = "貼近支撐，做多風險報酬較佳"; tColor = "#26a69a"; tIcon = "✅"; }
+          else if (resDist != null && resDist < 0.8) { tip = "逼近壓力，追高風險高，可等回踩"; tColor = "#ef5350"; tIcon = "⚠️"; }
+          else if (supDist != null && supDist > 4) { tip = "已遠離支撐，追高風險，建議等回踩再進"; tColor = "#ef8e53"; tIcon = "⚠️"; }
+          else tip = "處於區間中段，可分批進場或等更好價位";
+        } else {
+          const resDist = smc.snr.resistance?.dist;
+          const supDist = smc.snr.support?.dist;
+          if (resDist != null && resDist < 1) { tip = "貼近壓力，做空風險報酬較佳"; tColor = "#26a69a"; tIcon = "✅"; }
+          else if (supDist != null && supDist < 0.8) { tip = "逼近支撐，追空風險高，可等反彈"; tColor = "#ef5350"; tIcon = "⚠️"; }
+          else if (resDist != null && resDist > 4) { tip = "已遠離壓力，追空風險，建議等反彈再進"; tColor = "#ef8e53"; tIcon = "⚠️"; }
+          else tip = "處於區間中段，可分批進場或等更好價位";
+        }
+        return (
+          <div style={{ background: `${tColor}12`, border: `1px solid ${tColor}44`, borderRadius: 8, padding: "8px 10px", marginTop: 4 }}>
+            <span style={{ color: tColor, fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{tIcon} 進場時機：{tip}</span>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }
-
-// ═══════════ 交易紀錄卡 ═══════════════════════════════════════════════════
-const TRADES_KEY = "cryptex_trades_v1";
 
 function loadTrades() {
   try {
@@ -970,12 +1024,12 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
       <RiskOverview longs={data.longs} shorts={data.shorts} livePrices={livePrices} />
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
-        {data.longs.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}><div style={{ fontSize: 22, opacity: 0.4, marginBottom: 4 }}>📭</div>暫無符合條件的做多標的</div>}
+        {data.longs.length === 0 && !scanning && <EmptyState text="暫無符合條件的做多標的" hint="等下次掃描或調整門檻" />}
         {sortTrades(data.longs).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
-        {data.shorts.length === 0 && !scanning && <div style={{ color: "#4a5568", fontSize: 11, padding: "20px 4px", textAlign: "center" }}><div style={{ fontSize: 22, opacity: 0.4, marginBottom: 4 }}>📭</div>暫無符合條件的做空標的</div>}
+        {data.shorts.length === 0 && !scanning && <EmptyState text="暫無符合條件的做空標的" hint="等下次掃描或調整門檻" />}
         {sortTrades(data.shorts).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
       </Section>
 
@@ -1349,7 +1403,7 @@ function RiskOverview({ longs, shorts, livePrices }) {
   return (
     <Section title="⚖️ 持倉風險總覽" color="#58a6ff" defaultOpen={true}>
       {totalPnl != null && (
-        <div style={{ background: `${pnlColor(avgPnl)}14`, border: `1px solid ${pnlColor(avgPnl)}55`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, textAlign: "center" }}>
+        <div className={totalPnl >= 0 ? "glow-pos" : "glow-neg"} style={{ background: `${pnlColor(avgPnl)}14`, border: `1px solid ${pnlColor(avgPnl)}55`, borderRadius: 8, padding: "10px 12px", marginBottom: 8, textAlign: "center" }}>
           <div style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginBottom: 2 }}>持倉總未實現盈虧（等權重）</div>
           <div className="mono" style={{ color: pnlColor(avgPnl), fontSize: 24, fontWeight: 800 }}>{totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}%</div>
         </div>
@@ -1602,6 +1656,7 @@ export default function App() {
   const [alertSubTab, setAlertSubTab] = useState("recs");
   const [infoSubTab, setInfoSubTab] = useState("jin10");
   const [explosive, setExplosive] = useState(null);
+  const prevExplosiveSymsRef = useRef(new Set());
   const [explosiveLoading, setExplosiveLoading] = useState(false);
   const [explosiveTs, setExplosiveTs] = useState(0);
   const [explosiveProgress, setExplosiveProgress] = useState({ done: 0, total: 0 });
@@ -1616,6 +1671,19 @@ export default function App() {
   useEffect(() => { saveSigHistory(sigHistory); }, [sigHistory]);
   const [showSplash, setShowSplash] = useState(true);
   useEffect(() => { const t = setTimeout(() => setShowSplash(false), 1600); return () => clearTimeout(t); }, []);
+
+  // localStorage 清理：移除超過 30 天的已結束單，避免無限累積
+  useEffect(() => {
+    try {
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const raw = localStorage.getItem(AUTO_CLOSED_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        const kept = arr.filter((t) => (t.closedTs || 0) >= cutoff).slice(0, 500);
+        if (kept.length !== arr.length) localStorage.setItem(AUTO_CLOSED_KEY, JSON.stringify(kept));
+      }
+    } catch {}
+  }, []);
 
   // 頁面從背景回到前景時，重連 WebSocket（手機切App常斷線）
   useEffect(() => {
@@ -1898,6 +1966,10 @@ export default function App() {
       try {
         const r = await scanExplosive(coins, coins.length, (done, total) => { if (!cancel) setExplosiveProgress({ done, total }); });
         if (cancel) return;
+        // 標記新上榜：不在前次集合內的為 NEW
+        const prevSet = prevExplosiveSymsRef.current;
+        r.forEach((x) => { x.isNew = !prevSet.has(x.symbol); });
+        prevExplosiveSymsRef.current = new Set(r.map((x) => x.symbol));
         setExplosive(r); setExplosiveTs(Date.now());
       } catch {}
       if (!cancel) setExplosiveLoading(false);
@@ -1972,7 +2044,7 @@ export default function App() {
   const displayPrice = candles.length ? candles[candles.length - 1].c : (selected?.price || 0);
   const change24h = selected ? (coins.find((c) => c.symbol === selected.symbol)?.change ?? selected.change ?? 0) : 0;
   const up = change24h >= 0;
-  const fmtPr = (v) => (v > 100 ? v.toFixed(2) : v > 1 ? v.toFixed(4) : v.toFixed(6));
+  const fmtPr = (v) => fmtPrice(v);
   const fmtVol = (v) => {
     if (!v || v <= 0) return "";
     if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
@@ -2043,7 +2115,13 @@ button:active{transform:scale(.97)}
 .particle{position:absolute;width:3px;height:3px;border-radius:50%;animation:particleFloat var(--dur) ease-in-out infinite;animation-delay:var(--delay)}
 body.eyecomfort{filter:saturate(.82) brightness(.94)}
 body.hicontrast{filter:contrast(1.18) saturate(1.12)}
-@keyframes gaugeSweep{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--goff)}}`}</style>
+@keyframes gaugeSweep{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--goff)}}
+@keyframes tabPop{0%{transform:scale(1)}40%{transform:scale(1.28)}100%{transform:scale(1)}}
+.tab-icon-active{animation:tabPop .4s ease}
+@keyframes newPulse{0%,100%{opacity:1}50%{opacity:.45}}
+.new-badge{animation:newPulse 1.2s ease-in-out infinite}
+.glow-pos{box-shadow:0 0 22px -10px #26a69a, inset 0 1px 0 rgba(255,255,255,0.05)!important}
+.glow-neg{box-shadow:0 0 22px -10px #ef5350, inset 0 1px 0 rgba(255,255,255,0.05)!important}`}</style>
 
       {notif && (
         <div style={{ position: "fixed", top: 12, left: "50%", transform: "translateX(-50%)", zIndex: 1000, animation: "slideDown .35s ease-out", background: "#0d1520", border: `1.5px solid ${notif.color}`, color: notif.color, borderRadius: 12, padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 8px 30px rgba(0,0,0,.6)", maxWidth: "92vw" }}>
@@ -2177,7 +2255,7 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
           <div className="glass-sub" style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)", flexShrink: 0 }}>
             {[["overview", "📊", "總覽"], ["indicators", "📈", "指標"], ["scan", "🔍", "掃描"], ["journal", "💼", "交易"], ["info", "ℹ️", "資訊"]].map(([id, icon, label]) => (
               <button key={id} className="tab-btn" onClick={() => setSideTab(id)} style={{ flex: 1, background: sideTab === id ? "linear-gradient(180deg,rgba(88,166,255,0.14),transparent)" : "transparent", border: "none", borderBottom: `2px solid ${sideTab === id ? "#58a6ff" : "transparent"}`, color: sideTab === id ? "#e6edf3" : "#5a6b80", padding: "10px 0 9px", fontSize: 11, fontWeight: sideTab === id ? 700 : 500, fontFamily: "'Sora',sans-serif", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-                <span style={{ fontSize: 14, opacity: sideTab === id ? 1 : 0.6 }}>{icon}</span>
+                <span key={sideTab === id ? "a" : "i"} className={sideTab === id ? "tab-icon-active" : ""} style={{ fontSize: 14, opacity: sideTab === id ? 1 : 0.6 }}>{icon}</span>
                 {label}
               </button>
             ))}
@@ -2426,7 +2504,7 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
                   <div style={{ color: "#4a5568", fontSize: 9 }}>每 3 分鐘掃全部商品 OI 變化</div>
                 </div>
                 <Section title={`警報事件 (${alerts.length})`} color="#f0b90b" badge="即時">
-                  {alerts.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>目前無異常，每 3 分鐘自動掃描...</div>}
+                  {alerts.length === 0 && <EmptyState icon="📡" text="目前無異常" hint="每 3 分鐘自動掃描" />}
                   {alerts.map((al, i) => (
                     <button key={`${al.symbol}-${al.ts}-${i}`} onClick={() => { const c = coins.find((x) => x.symbol === al.symbol); if (c) setSelected(c); }} style={{ width: "100%", background: "#0d1520", border: `1px solid ${al.color}44`, borderLeft: `3px solid ${al.color}`, borderRadius: 6, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8, textAlign: "left", cursor: "pointer" }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -2479,6 +2557,7 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                                 <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{ex.name}</span>
+                                {ex.isNew && <span className="new-badge" style={{ background: "#58a6ff", color: "#000", fontSize: 7, fontFamily: "monospace", fontWeight: 700, padding: "1px 4px", borderRadius: 3 }}>NEW</span>}
                                 <span style={{ color: ex.change >= 0 ? "#26a69a" : "#ef5350", fontSize: 9, fontFamily: "monospace" }}>{ex.change >= 0 ? "+" : ""}{ex.change.toFixed(2)}%</span>
                                 <span style={{ marginLeft: "auto", background: col, color: "#000", fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "1px 6px", borderRadius: 3 }}>{ex.score}分</span>
                               </div>
@@ -2514,7 +2593,7 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
                   <div style={{ color: "#4a5568", fontSize: 9 }}>Binance 即時強平流 · 門檻 $50K · 超過 $500K 跳通知</div>
                 </div>
                 <Section title={`即時爆倉 (${liquidations.length})`} color="#ef5350" badge="LIVE" defaultOpen={true}>
-                  {liquidations.length === 0 && <div style={{ color: "#4a5568", fontSize: 11, padding: "16px 4px", textAlign: "center" }}>等待大額爆倉中...（連線後即時推送）</div>}
+                  {liquidations.length === 0 && <EmptyState icon="💥" text="等待大額爆倉" hint="連線後即時推送" />}
                   {liquidations.map((liq, i) => {
                     const isLongLiq = liq.side === "long";
                     const col = isLongLiq ? "#ef5350" : "#26a69a";
