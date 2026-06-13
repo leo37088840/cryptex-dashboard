@@ -416,6 +416,21 @@ function TradeCard({ trade, livePrice, onDelete, onClose }) {
   );
 }
 
+// ═══════════ 全域設定 ═══════════════════════════════════════════════════════
+const SETTINGS_KEY = "cryptex_settings_v1";
+const DEFAULT_SETTINGS = {
+  autoScanMins: 5,      // 自動重掃間隔（分鐘）；0 = 只手動
+  scoreCloseConfirm: true, // 評分平倉需連續兩次低於門檻才平
+  scoreCloseTh: 40,     // 評分平倉門檻
+  scanTopN: 0,          // 掃描範圍：0=全部，其餘=前N大成交量
+};
+function loadSettings() {
+  try { const r = localStorage.getItem(SETTINGS_KEY); return r ? { ...DEFAULT_SETTINGS, ...JSON.parse(r) } : { ...DEFAULT_SETTINGS }; } catch { return { ...DEFAULT_SETTINGS }; }
+}
+function saveSettings(s) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {}
+}
+
 // ═══════════ 自動推薦單（系統自動掃描+建單+監控） ═══════════════════════════
 const AUTO_TRADES_KEY = "cryptex_auto_trades_v1";
 const AUTO_TRADES_TS_KEY = "cryptex_auto_trades_ts_v1";
@@ -559,8 +574,8 @@ function computeOutcome(trade, exitPrice, reason) {
   return { ...trade, exitPrice, exitReason: reason, pnlPct, rMultiple, closedTs: Date.now() };
 }
 
-// 評估某張單在現價下是否該平倉，回傳 {price, reason} 或 null
-function evalClose(trade, livePrice, currentScore) {
+// 評估某張單在現價下是否該平倉(僅價格觸發:SL/最終TP)，回傳 {price, reason} 或 null
+function evalClose(trade, livePrice) {
   if (livePrice == null) return null;
   const isLong = trade.direction === "long";
   const slHit = isLong ? livePrice <= trade.sl : livePrice >= trade.sl;
@@ -568,7 +583,6 @@ function evalClose(trade, livePrice, currentScore) {
   const tps = [trade.tp1, trade.tp2, trade.tp3].filter((x) => x != null);
   const allTpHit = tps.length > 0 && tps.every((tp) => isLong ? livePrice >= tp : livePrice <= tp);
   if (allTpHit) return { price: tps[tps.length - 1], reason: "止盈" };
-  if (currentScore != null && currentScore < 40) return { price: livePrice, reason: "評分過低" };
   return null;
 }
 
@@ -633,7 +647,7 @@ function ShareCard({ trade, livePrice, onClose }) {
   );
 }
 
-function AutoTrades({ coins, onNotify, onSetAlert }) {
+function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
   const [data, setData] = useState(() => {
     const d = loadAutoTrades();
     d.longs = (d.longs || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
@@ -646,6 +660,7 @@ function AutoTrades({ coins, onNotify, onSetAlert }) {
   const [lastScanTs, setLastScanTs] = useState(() => loadAutoTradesTs());
   const [livePrices, setLivePrices] = useState({});
   const cancelledRef = useRef({});
+  const lowScoreCountRef = useRef({});
   const [sortMode, setSortMode] = useState("score"); // score | pnl
   const [shareTarget, setShareTarget] = useState(null);
 
@@ -696,7 +711,7 @@ function AutoTrades({ coins, onNotify, onSetAlert }) {
     ["longs", "shorts"].forEach((side) => {
       data[side].forEach((t) => {
         const live = priceOf(t);
-        const res = evalClose(t, live, null); // 價格觸發不看評分
+        const res = evalClose(t, live); // 價格觸發:SL/最終TP
         if (res) toClose.push({ side, trade: t, ...res });
       });
     });
@@ -743,7 +758,8 @@ function AutoTrades({ coins, onNotify, onSetAlert }) {
         const finalize = (m) => { const o = {}; Object.keys(m).forEach((k) => { o[k] = { n: m[k].n, winRate: m[k].n ? (m[k].w / m[k].n) * 100 : 0 }; }); return o; };
         return { structure: finalize(byStruc), direction: finalize(byDir) };
       })();
-      const r = await scanAutoTrades(coins, coins.length, PER_SIDE, (p) => setScanProgress(p), weights);
+      const scanCount = settings.scanTopN > 0 ? Math.min(settings.scanTopN, coins.length) : coins.length;
+      const r = await scanAutoTrades(coins, scanCount, PER_SIDE, (p) => setScanProgress(p), weights);
       // 新掃描結果建立 symbol→finalScore 對照，用於評分過低平倉
       const freshScore = {};
       [...r.longs, ...r.shorts].forEach((t) => { freshScore[t.symbol] = t.finalScore; });
@@ -751,12 +767,26 @@ function AutoTrades({ coins, onNotify, onSetAlert }) {
       const closeList = [];
       setData((prev) => {
         function processSide(side, existing, fresh) {
-          // 先檢查現有單是否該平倉（價格觸發 or 評分<40）
+          const th = settings.scoreCloseTh;
           const stillOpen = existing.filter((t) => {
             const live = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""))?.price;
-            const curScore = freshScore[t.symbol]; // 若這次沒掃到，視為仍有效（undefined→不平倉）
-            const res = evalClose(t, live, curScore != null ? curScore : null);
-            if (res) { closeList.push({ side, trade: t, ...res }); return false; }
+            // 價格觸發優先（SL/最終TP）
+            const priceRes = evalClose(t, live);
+            if (priceRes) { closeList.push({ side, trade: t, ...priceRes }); lowScoreCountRef.current[t.id] = 0; return false; }
+            // 評分平倉：可設定連續兩次低於門檻才平
+            const curScore = freshScore[t.symbol];
+            if (curScore != null && curScore < th) {
+              if (settings.scoreCloseConfirm) {
+                const cnt = (lowScoreCountRef.current[t.id] || 0) + 1;
+                lowScoreCountRef.current[t.id] = cnt;
+                if (cnt >= 2) { closeList.push({ side, trade: t, price: live, reason: "評分過低" }); return false; }
+                return true; // 第一次低分，先留著觀察
+              } else {
+                closeList.push({ side, trade: t, price: live, reason: "評分過低" }); return false;
+              }
+            } else {
+              lowScoreCountRef.current[t.id] = 0; // 評分回升，重置計數
+            }
             return true;
           });
           const existingSymbols = new Set(stillOpen.map((t) => t.symbol));
@@ -797,18 +827,22 @@ function AutoTrades({ coins, onNotify, onSetAlert }) {
     setScanProgress(null);
   }
 
-  // 自動：首次進入若無資料或超過5分鐘，或現有單未滿則觸發掃描；之後每5分鐘檢查一次
+  // 自動掃描：間隔由設定決定（0=只手動，但首次空清單仍會補滿一次）
   useEffect(() => {
     if (!coins || !coins.length) return;
+    const mins = settings?.autoScanMins ?? 5;
     const needScan = () => {
       const totalSlots = data.longs.length + data.shorts.length;
-      return totalSlots < PER_SIDE * 2 || Date.now() - lastScanTs >= 5 * 60 * 1000;
+      if (totalSlots === 0) return true; // 完全沒單，一定補
+      if (mins <= 0) return false;       // 設為只手動，之後不自動掃
+      return totalSlots < PER_SIDE * 2 || Date.now() - lastScanTs >= mins * 60 * 1000;
     };
     if (needScan()) runScan();
+    if (mins <= 0) return; // 只手動模式不開定時器
     const iv = setInterval(() => { if (needScan()) runScan(); }, 60 * 1000);
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coins]);
+  }, [coins, settings?.autoScanMins]);
 
   function clearClosed() {
     setClosed([]);
@@ -974,7 +1008,7 @@ function DailyBacktest({ closed, onClear }) {
   );
 }
 
-function TradeJournal({ coins, defaultSymbol, onNotify, onSetAlert }) {
+function TradeJournal({ coins, defaultSymbol, onNotify, onSetAlert, settings }) {
   const [journalSubTab, setJournalSubTab] = useState("auto");
   const [trades, setTrades] = useState(() => loadTrades());
   const [showForm, setShowForm] = useState(false);
@@ -1016,7 +1050,7 @@ function TradeJournal({ coins, defaultSymbol, onNotify, onSetAlert }) {
         ))}
       </div>
 
-      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} onSetAlert={onSetAlert} />}
+      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} onSetAlert={onSetAlert} settings={settings} />}
 
       {journalSubTab === "manual" && <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1421,6 +1455,17 @@ export default function App() {
   const [priceAlerts, setPriceAlerts] = useState(() => loadPriceAlerts());
   const [showWatchOnly, setShowWatchOnly] = useState(false);
   const [liquidations, setLiquidations] = useState([]);
+  const [settings, setSettings] = useState(() => loadSettings());
+  useEffect(() => { saveSettings(settings); }, [settings]);
+  const [wsEpoch, setWsEpoch] = useState(0);
+
+  // 頁面從背景回到前景時，重連 WebSocket（手機切App常斷線）
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible") setWsEpoch((e) => e + 1); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("online", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("online", onVis); };
+  }, []);
 
   const lastSig = useRef(null);
   const alertFiredRef = useRef({});
@@ -1522,7 +1567,7 @@ export default function App() {
     }, 50000);
     return () => off();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notifOn]);
+  }, [notifOn, wsEpoch]);
 
   // 載入 K 線（後台用，給指標/SMC/AI 計算，UI 不畫圖）
   useEffect(() => {
@@ -1605,7 +1650,8 @@ export default function App() {
       });
     });
     return () => off();
-  }, [selected]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, wsEpoch]);
 
   // 推薦掃描
   const coinsLoaded = coins.length > 0;
@@ -2005,7 +2051,7 @@ button:active{transform:scale(.97)}
 
             {/* 交易 */}
             {sideTab === "journal" && (
-              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} onNotify={pushNotif} onSetAlert={(t) => { addPriceAlert(t.symbol, t.entry, t.direction === "long" ? "below" : "above"); pushNotif({ symbol: t.symbol, signal: `已設到價提醒 @ ${t.entry}`, color: "#f0b90b", confidence: 0 }); }} />
+              <TradeJournal coins={coins} defaultSymbol={selected?.symbol} onNotify={pushNotif} settings={settings} onSetAlert={(t) => { addPriceAlert(t.symbol, t.entry, t.direction === "long" ? "below" : "above"); pushNotif({ symbol: t.symbol, signal: `已設到價提醒 @ ${t.entry}`, color: "#f0b90b", confidence: 0 }); }} />
             )}
 
             {sideTab === "indicators" && indData && <>
@@ -2223,7 +2269,7 @@ button:active{transform:scale(.97)}
             {/* 資訊（金十+說明） */}
             {sideTab === "info" && <>
             <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-              {[["jin10", "📰 金十快訊"], ["news", "📖 說明"]].map(([id, label]) => (
+              {[["jin10", "📰 快訊"], ["news", "📖 說明"], ["settings", "⚙️ 設定"]].map(([id, label]) => (
                 <button key={id} onClick={() => setInfoSubTab(id)} style={{ flex: 1, background: infoSubTab === id ? "#0f1e2e" : "#0d1520", border: `1px solid ${infoSubTab === id ? "#58a6ff" : "#1a2535"}`, borderRadius: 6, color: infoSubTab === id ? "#58a6ff" : "#4a5568", padding: "7px 0", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
               ))}
             </div>
@@ -2256,6 +2302,55 @@ button:active{transform:scale(.97)}
               <p>多時區共振策略 — 1D 趨勢 + 4H 確認 + 1H 進場 + 量能過濾。交易少但勝率高。</p>
               <p style={{ marginTop: 8, color: "#e6edf3", fontWeight: 700 }}>⚡ 推薦與警報</p>
               <p>每 5 分鐘全量掃描推薦清單；每 3 分鐘全量掃 OI 異常警報。</p>
+            </div>}
+
+            {infoSubTab === "settings" && <div style={{ padding: 2 }}>
+              <Section title="🤖 自動推薦單設定" color="#58a6ff" defaultOpen={true}>
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>自動重新掃描間隔</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 6 }}>間隔越長，清單越穩定、越省 API。選「只手動」則只在你按重新掃描時更新。</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {[[5, "5分鐘"], [15, "15分鐘"], [30, "30分鐘"], [0, "只手動"]].map(([v, label]) => (
+                      <button key={v} onClick={() => setSettings((s) => ({ ...s, autoScanMins: v }))} style={{ flex: 1, background: settings.autoScanMins === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.autoScanMins === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.autoScanMins === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>評分平倉方式</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 6 }}>「連續兩次」可避免評分短暫跌破門檻就被砍掉好單。</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {[[true, "連續兩次低於門檻才平"], [false, "一次低於就平"]].map(([v, label]) => (
+                      <button key={String(v)} onClick={() => setSettings((s) => ({ ...s, scoreCloseConfirm: v }))} style={{ flex: 1, background: settings.scoreCloseConfirm === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.scoreCloseConfirm === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.scoreCloseConfirm === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>評分平倉門檻：{settings.scoreCloseTh}</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 6 }}>持倉中的單評分掉到此值以下就考慮平倉。越低越寬鬆（不容易被砍）。</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {[30, 40, 50].map((v) => (
+                      <button key={v} onClick={() => setSettings((s) => ({ ...s, scoreCloseTh: v }))} style={{ flex: 1, background: settings.scoreCloseTh === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.scoreCloseTh === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.scoreCloseTh === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{v}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>掃描範圍</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 6 }}>只掃前 N 大成交量可大幅加快、省 API；全部最完整但較重。</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {[[100, "前100"], [200, "前200"], [0, "全部"]].map(([v, label]) => (
+                      <button key={v} onClick={() => setSettings((s) => ({ ...s, scanTopN: v }))} style={{ flex: 1, background: settings.scanTopN === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.scanTopN === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.scanTopN === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+              </Section>
+
+              <div style={{ color: "#4a5568", fontSize: 9, lineHeight: 1.6, padding: "4px 4px" }}>
+                <p>· 設定會自動儲存在本機，下次開啟沿用。</p>
+                <p>· 改「掃描範圍」「間隔」後，下次掃描生效。</p>
+              </div>
             </div>}
             </>}
             </div>
