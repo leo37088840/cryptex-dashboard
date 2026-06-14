@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // CRYPTEX data layer — 加密貨幣專業分析版
-// 現貨: Binance + OKX + CoinGecko  | 期貨: Binance fapi
+// 商品/K線/期貨資料: Binance fapi  | 中文名: CoinGecko(僅補名稱)
 // 金十快訊
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -34,7 +34,7 @@ async function getText(url, { useProxy = false } = {}) {
   } catch { return null; }
 }
 
-// ═══════════ 永續合約列表 (Binance Futures + OKX SWAP + CoinGecko 補中文名) ═══
+// ═══════════ 永續合約列表 (只用 Binance Futures；CoinGecko 僅補中文名) ═══════
 export async function loadCrypto() {
   const merged = new Map();
   const add = (c) => {
@@ -42,12 +42,11 @@ export async function loadCrypto() {
     const ex = merged.get(c.name);
     if (!ex || (c.volume || 0) > (ex.volume || 0)) merged.set(c.name, c);
   };
-  const [binance, okx, gecko] = await Promise.all([
+  // 商品清單只來自幣安永續，數量穩定；CoinGecko 僅用來補中文名（失敗不影響清單）
+  const [binance, gecko] = await Promise.all([
     jget("https://fapi.binance.com/fapi/v1/ticker/24hr"),
-    jget("https://www.okx.com/api/v5/market/tickers?instType=SWAP"),
-    jget("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=500&page=1"),
+    jget("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=500&page=1").catch(() => null),
   ]);
-  // 先用 CoinGecko 建立中文名對照表
   const labelMap = new Map();
   if (Array.isArray(gecko)) {
     gecko.forEach((c) => labelMap.set(c.symbol.toUpperCase(), c.name));
@@ -67,21 +66,6 @@ export async function loadCrypto() {
           volume: parseFloat(t.quoteVolume) || 0,
         });
       });
-  }
-  if (okx?.data?.length) {
-    okx.data.filter((t) => t.instId.endsWith("-USDT-SWAP")).forEach((t) => {
-      const name = t.instId.replace("-USDT-SWAP", "");
-      add({
-        symbol: `${name}-USDT`,
-        okxSymbol: t.instId,
-        name,
-        label: labelMap.get(name),
-        cat: "crypto",
-        price: parseFloat(t.last) || 0,
-        change: t.open24h ? ((parseFloat(t.last) - parseFloat(t.open24h)) / parseFloat(t.open24h)) * 100 : 0,
-        volume: parseFloat(t.volCcy24h) || 0,
-      });
-    });
   }
   return Array.from(merged.values()).sort((a, b) => (b.volume || 0) - (a.volume || 0));
 }
