@@ -631,7 +631,7 @@ function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 
-const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, onShare, onSetAlert }) {
+const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, onShare, onSetAlert, onManualClose }) {
   const isLong = trade.direction === "long";
   const dirColor = isLong ? "#26a69a" : "#ef5350";
   const dirLabel = isLong ? "做多" : "做空";
@@ -729,7 +729,10 @@ const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, 
           {slHit() ? "已觸及止損，平倉中…" : "已達最終止盈，平倉中…"}
         </div>
       ) : (
-        <button onClick={() => onCancel && onCancel(trade)} style={{ width: "100%", marginTop: 6, background: "transparent", border: "1px solid #3a4658", borderRadius: 5, color: "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>撤銷此單（沒跟到，不計入回測）</button>
+        <>
+          <button onClick={() => { if (livePrice != null) onManualClose && onManualClose(trade, livePrice); }} disabled={livePrice == null} style={{ width: "100%", marginTop: 6, background: pnlPct == null ? "#0d1520" : pnlPct >= 0 ? "#0e1f1a" : "#1f1212", border: `1px solid ${pnlPct == null ? "#1a2535" : pnlPct >= 0 ? "#26a69a" : "#ef5350"}55`, borderRadius: 5, color: pnlPct == null ? "#4a5568" : pnlPct >= 0 ? "#26a69a" : "#ef5350", padding: "6px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700, opacity: livePrice == null ? 0.5 : 1 }}>💰 手動止盈平倉{pnlPct != null ? `（現價 ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%）` : "（等待報價）"}</button>
+          <button onClick={() => onCancel && onCancel(trade)} style={{ width: "100%", marginTop: 6, background: "transparent", border: "1px solid #3a4658", borderRadius: 5, color: "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>撤銷此單（沒跟到，不計入回測）</button>
+        </>
       )}
     </div>
   );
@@ -1028,6 +1031,26 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
     setTimeout(() => { runScan(); }, 300);
   }
 
+  // 手動止盈：用現價平倉，計入回測/勝率回饋，移到已結束區。
+  function manualClose(trade, livePrice) {
+    if (livePrice == null) return;
+    const side = trade.direction === "long" ? "longs" : "shorts";
+    // 從進行中移除
+    setData((prev) => ({ ...prev, [side]: prev[side].filter((t) => t.id !== trade.id) }));
+    // 寫入已結束（reason = 手動止盈，會計入回測與勝率回饋）
+    setClosed((prev) => [computeOutcome(trade, livePrice, "手動止盈"), ...prev].slice(0, 500));
+    const win = (trade.direction === "long" ? livePrice >= trade.entry : trade.entry >= livePrice);
+    if (onNotify) onNotify({
+      symbol: trade.name || trade.symbol,
+      signal: `手動止盈 · ${win ? "獲利" : "虧損"}平倉`,
+      color: win ? "#26a69a" : "#f0b90b",
+      confidence: trade.finalScore,
+      sound: "normal",
+    });
+    // 平掉後留下空位，稍後掃描補齊
+    setTimeout(() => { runScan(); }, 300);
+  }
+
   return (
     <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1068,12 +1091,12 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <EmptyState text="暫無符合條件的做多標的" hint="等下次掃描或調整門檻" />}
-        {sortTrades(data.longs).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
+        {sortTrades(data.longs).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onManualClose={manualClose} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
         {data.shorts.length === 0 && !scanning && <EmptyState text="暫無符合條件的做空標的" hint="等下次掃描或調整門檻" />}
-        {sortTrades(data.shorts).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
+        {sortTrades(data.shorts).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onManualClose={manualClose} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
       </Section>
 
       {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
@@ -2125,17 +2148,18 @@ button:active{transform:scale(.97)}
 .card-hover:hover{transform:translateY(-2px);box-shadow:0 8px 24px -10px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.14)!important}
 @keyframes slideDown{from{transform:translate(-50%,-120%);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes glowPulse{0%,100%{box-shadow:0 0 24px -6px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.04)}50%{box-shadow:0 0 40px -4px var(--glow),inset 0 0 0 1px rgba(255,255,255,0.08)}}
 @keyframes glowDriftLong{0%,100%{background-position:50% 30%}50%{background-position:50% 10%}}
 @keyframes glowDriftShort{0%,100%{background-position:50% 70%}50%{background-position:50% 90%}}
 @keyframes ringSpin{from{stroke-dashoffset:var(--circ)}to{stroke-dashoffset:var(--off)}}
 @keyframes breathe{0%,100%{opacity:.55;filter:saturate(.85)}50%{opacity:1;filter:saturate(1.2)}}
 .breathe{animation:breathe 2.6s ease-in-out infinite}
-.signal-card{position:relative;animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite;background-size:160% 160%!important}
-.signal-card.dir-long{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite,glowDriftLong 6s ease-in-out infinite}
-.signal-card.dir-short{animation:fadeUp .4s ease,glowPulse 3.5s ease-in-out infinite,glowDriftShort 6s ease-in-out infinite}
+.signal-card{position:relative;animation:glowPulse 3.5s ease-in-out infinite;background-size:160% 160%!important}
+.signal-card.dir-long{animation:glowPulse 3.5s ease-in-out infinite,glowDriftLong 6s ease-in-out infinite}
+.signal-card.dir-short{animation:glowPulse 3.5s ease-in-out infinite,glowDriftShort 6s ease-in-out infinite}
 .fade-in{animation:fadeUp .35s ease}
-.tab-pane{animation:fadeUp .3s ease}
+.tab-pane{animation:fadeIn .3s ease}
 @keyframes skeletonPulse{0%,100%{opacity:.4}50%{opacity:.9}}
 @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
 .skeleton{border-radius:8px;background:linear-gradient(90deg,#0d1520 25%,#1a2535 50%,#0d1520 75%);background-size:200% 100%;animation:shimmer 1.6s linear infinite}
