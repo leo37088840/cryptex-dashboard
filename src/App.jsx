@@ -951,18 +951,6 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
 
   useEffect(() => { saveAutoTrades(data); }, [data]);
   useEffect(() => { saveClosedTrades(closed); }, [closed]);
-
-  // 異常偵測（定期檢測，避免重複通知）
-  const lastAnomalyCheckRef = useRef(0);
-  useEffect(() => {
-    const checkInterval = setInterval(() => {
-      if (Date.now() - lastAnomalyCheckRef.current > 5 * 60 * 1000) {
-        detectAnomalies(closed, settings, pushNotif);
-        lastAnomalyCheckRef.current = Date.now();
-      }
-    }, 10000);
-    return () => clearInterval(checkInterval);
-  }, [closed, settings]);
   useEffect(() => { saveAutoTradesTs(lastScanTs); }, [lastScanTs]);
 
   const PER_SIDE = settings?.perSide ?? 5;
@@ -1310,13 +1298,14 @@ function DailyBacktest({ closed, onClear }) {
     const all = closed || [];
     const wins = all.filter(t => t.pnlPct >= 0).length;
     const totalPnl = all.reduce((s, t) => s + (t.pnlPct || 0), 0);
+    const bestMonth = months.length ? [...months].sort((a, b) => b.totalPnl - a.totalPnl)[0] : null;
     return {
       total: all.length,
       wins,
       losses: all.length - wins,
       winRate: all.length ? (wins / all.length) * 100 : 0,
       totalPnl,
-      bestMonth: months.length ? months.sort((a, b) => b.totalPnl - a.totalPnl)[0] : null,
+      bestMonth,
     };
   }, [closed, months]);
 
@@ -2008,6 +1997,7 @@ export default function App() {
   const [alertSubTab, setAlertSubTab] = useState("recs");
   const [infoSubTab, setInfoSubTab] = useState("jin10");
   const [explosive, setExplosive] = useState(null);
+  const [anomalies, setAnomalies] = useState([]);
   // 掃描排行：計算幣種出現在多個掃描的次數
   const computeScanRanking = useMemo(() => {
     const ranking = new Map();
@@ -2042,7 +2032,7 @@ export default function App() {
       .map(r => ({ ...r, score: r.cats.size }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 15);
-  }, [data.longs, data.shorts, anomalies, explosive]);
+  }, [data, anomalies, explosive]);
   const prevExplosiveSymsRef = useRef(new Set());
   const [explosiveLoading, setExplosiveLoading] = useState(false);
   const [explosiveTs, setExplosiveTs] = useState(0);
@@ -2423,6 +2413,18 @@ export default function App() {
     }
     setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
   }
+
+  // 異常偵測（定期檢測）
+  const lastAnomalyCheckRef = useRef(0);
+  useEffect(() => {
+    const checkInterval = setInterval(() => {
+      if (Date.now() - lastAnomalyCheckRef.current > 5 * 60 * 1000) {
+        detectAnomalies(closed, settings, pushNotif);
+        lastAnomalyCheckRef.current = Date.now();
+      }
+    }, 10000);
+    return () => clearInterval(checkInterval);
+  }, [closed, settings, pushNotif]);
 
   const indData = (() => {
     if (candles.length < 30) return null;
