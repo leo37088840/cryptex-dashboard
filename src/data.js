@@ -1298,7 +1298,7 @@ export async function scanAutoTrades(coins, top = 99999, perSide = 5, onProgress
       const isLong = smc.signal.includes("做多");
       const isShort = smc.signal.includes("做空");
       if (!isLong && !isShort) return;
-      stage1.push({ coin, candles: k, smc, isLong, quickScore: smc.confidence });
+      stage1.push({ coin, candles: k, smc, isLong, isShort, quickScore: smc.confidence });
     });
     if (onProgress) onProgress({ stage: 1, done: Math.min(i + 15, cands.length), total: cands.length });
     if (i + 15 < cands.length) await new Promise(r => setTimeout(r, 150));
