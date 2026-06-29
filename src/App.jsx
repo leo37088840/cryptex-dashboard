@@ -590,12 +590,16 @@ const DEFAULT_SETTINGS = {
   autoScanMins: 5,
   scoreCloseConfirm: true,
   scoreCloseTh: 40,
-  scoreConsecutive: 2,   // 連續低分幾次才平（2/3/5）
-  scoreFilterTh: 40,     // 推薦品質門檻（嚴格60/均衡40/寬鬆20）
+  scoreConsecutive: 2,
+  scoreFilterTh: 40,
   scanTopN: 0,
   soundOn: false,
   displayMode: "normal",
   perSide: 5,
+  // 自訂平倉 %：null 表示不在該 TP 平倉，全部空白時等同舊版（TP3 才全平）
+  tpClosePct1: null,
+  tpClosePct2: null,
+  tpClosePct3: null,
 };
 function loadSettings() {
   try { const r = localStorage.getItem(SETTINGS_KEY); return r ? { ...DEFAULT_SETTINGS, ...JSON.parse(r) } : { ...DEFAULT_SETTINGS }; } catch { return { ...DEFAULT_SETTINGS }; }
@@ -779,24 +783,39 @@ function computeOutcome(trade, exitPrice, reason) {
   return { ...trade, exitPrice, exitReason: reason, pnlPct, rMultiple, closedTs: Date.now() };
 }
 
-// 評估某張單在現價下是否該平倉(分批止盈版)，回傳 {price, reason} 或 null
-function evalClose(trade, livePrice) {
+// 評估某張單在現價下是否該平倉。settings 可選，若提供則使用自訂平倉 %
+function evalClose(trade, livePrice, settings) {
   if (livePrice == null) return null;
   const isLong = trade.direction === "long";
   const slHit = isLong ? livePrice <= trade.sl : livePrice >= trade.sl;
   if (slHit) return { price: trade.sl, reason: "止損" };
-  // TP 分批：優先平 TP1(50%+移損保本) → TP2(30%+移損TP1) → TP3(20%)
-  if (trade.tp1 != null && !trade.tp1Closed) {
+
+  // 讀取自訂 %（settings 沒提供時全部視為 null = 預設行為）
+  const pct1 = settings?.tpClosePct1 ?? null;
+  const pct2 = settings?.tpClosePct2 ?? null;
+  const pct3 = settings?.tpClosePct3 ?? null;
+  // 三個都未設 → 預設行為：TP3 觸發才全平（舊版相容）
+  const allUnset = pct1 == null && pct2 == null && pct3 == null;
+
+  // TP1
+  if (trade.tp1 != null && !trade.tp1Closed && pct1 != null) {
     const tp1Hit = isLong ? livePrice >= trade.tp1 : livePrice <= trade.tp1;
-    if (tp1Hit) return { price: trade.tp1, reason: "止盈 TP1(平50%)", partialClose: "tp1" };
+    if (tp1Hit) return { price: trade.tp1, reason: `止盈 TP1(平${pct1}%)`, partialClose: "tp1", closePct: pct1 };
   }
-  if (trade.tp2 != null && !trade.tp2Closed) {
+  // TP2
+  if (trade.tp2 != null && !trade.tp2Closed && pct2 != null) {
     const tp2Hit = isLong ? livePrice >= trade.tp2 : livePrice <= trade.tp2;
-    if (tp2Hit) return { price: trade.tp2, reason: "止盈 TP2(平30%)", partialClose: "tp2" };
+    if (tp2Hit) return { price: trade.tp2, reason: `止盈 TP2(平${pct2}%)`, partialClose: "tp2", closePct: pct2 };
   }
+  // TP3：未設或 allUnset 時預設為 100%（全平）
   if (trade.tp3 != null && !trade.tp3Closed) {
     const tp3Hit = isLong ? livePrice >= trade.tp3 : livePrice <= trade.tp3;
-    if (tp3Hit) return { price: trade.tp3, reason: "止盈 TP3(平20%)", partialClose: "tp3" };
+    if (tp3Hit) {
+      const finalPct = pct3 != null ? pct3 : (allUnset ? 100 : null);
+      if (finalPct != null) {
+        return { price: trade.tp3, reason: `止盈 TP3${finalPct === 100 ? "" : `(平${finalPct}%)`}`, partialClose: "tp3", closePct: finalPct };
+      }
+    }
   }
   return null;
 }
@@ -927,6 +946,25 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
   const [sortMode, setSortMode] = useState("score"); // score | pnl
   const [shareTarget, setShareTarget] = useState(null);
 
+  // 掃描排行：計算幣種出現在多個掃描的次數
+  const computeScanRanking = useMemo(() => {
+    const ranking = new Map();
+    const addToRanking = (items, category) => {
+      if (!items || !Array.isArray(items)) return;
+      items.forEach(item => {
+        const sym = item.symbol;
+        if (!ranking.has(sym)) ranking.set(sym, { symbol: sym, name: item.name, cats: new Set(), score: 0 });
+        ranking.get(sym).cats.add(category);
+      });
+    };
+    addToRanking(data.longs, "推薦多");
+    addToRanking(data.shorts, "推薦空");
+    return Array.from(ranking.values())
+      .map(r => ({ ...r, score: r.cats.size }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 15);
+  }, [data]);
+
   // 依現價計算單子未實現盈虧%
   const livePnl = (t) => {
     const live = livePrices[t.symbol];
@@ -951,6 +989,18 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
 
   useEffect(() => { saveAutoTrades(data); }, [data]);
   useEffect(() => { saveClosedTrades(closed); }, [closed]);
+
+  // 異常偵測（每5分鐘檢測一次）
+  const lastAnomalyCheckRef = useRef(0);
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (Date.now() - lastAnomalyCheckRef.current > 5 * 60 * 1000) {
+        try { detectAnomalies(closed, settings, onNotify); } catch {}
+        lastAnomalyCheckRef.current = Date.now();
+      }
+    }, 30000);
+    return () => clearInterval(t);
+  }, [closed, settings, onNotify]);
   useEffect(() => { saveAutoTradesTs(lastScanTs); }, [lastScanTs]);
 
   const PER_SIDE = settings?.perSide ?? 5;
@@ -974,7 +1024,7 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
     ["longs", "shorts"].forEach((side) => {
       data[side].forEach((t) => {
         const live = priceOf(t);
-        const res = evalClose(t, live); // 價格觸發:SL/最終TP
+        const res = evalClose(t, live, settings); // 價格觸發:SL/最終TP
         if (res) toClose.push({ side, trade: t, ...res });
       });
     });
@@ -1042,7 +1092,7 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
           const stillOpen = existing.filter((t) => {
             const live = coins.find((x) => x.symbol === t.symbol || x.name === t.symbol.replace("-USDT", ""))?.price;
             // 價格觸發優先（SL/最終TP）
-            const priceRes = evalClose(t, live);
+            const priceRes = evalClose(t, live, settings);
             if (priceRes) { closeList.push({ side, trade: t, ...priceRes }); lowScoreCountRef.current[t.id] = 0; return false; }
             // 評分平倉：根據設定的連續次數才平
             const curScore = freshScore[t.symbol];
@@ -1998,41 +2048,6 @@ export default function App() {
   const [infoSubTab, setInfoSubTab] = useState("jin10");
   const [explosive, setExplosive] = useState(null);
   const [anomalies, setAnomalies] = useState([]);
-  // 掃描排行：計算幣種出現在多個掃描的次數
-  const computeScanRanking = useMemo(() => {
-    const ranking = new Map();
-    const addToRanking = (items, category) => {
-      if (!items || !Array.isArray(items)) return;
-      items.forEach(item => {
-        const sym = item.symbol;
-        if (!ranking.has(sym)) ranking.set(sym, { symbol: sym, name: item.name, cats: new Set(), score: 0 });
-        ranking.get(sym).cats.add(category);
-      });
-    };
-    addToRanking(data.longs, "推薦多");
-    addToRanking(data.shorts, "推薦空");
-    if (recsProgress.done > 0 && recsProgress.total > 0) {
-      // recs是另存的，這裡簡化為只算已開單
-    }
-    if (anomalies && anomalies.length) {
-      anomalies.forEach(a => {
-        const sym = a.symbol;
-        if (!ranking.has(sym)) ranking.set(sym, { symbol: sym, name: a.name, cats: new Set(), score: 0 });
-        ranking.get(sym).cats.add("警報");
-      });
-    }
-    if (explosive && explosive.length) {
-      explosive.forEach(e => {
-        const sym = e.symbol;
-        if (!ranking.has(sym)) ranking.set(sym, { symbol: sym, name: e.name, cats: new Set(), score: 0 });
-        ranking.get(sym).cats.add("爆發");
-      });
-    }
-    return Array.from(ranking.values())
-      .map(r => ({ ...r, score: r.cats.size }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 15);
-  }, [data, anomalies, explosive]);
   const prevExplosiveSymsRef = useRef(new Set());
   const [explosiveLoading, setExplosiveLoading] = useState(false);
   const [explosiveTs, setExplosiveTs] = useState(0);
@@ -2413,18 +2428,6 @@ export default function App() {
     }
     setTimeout(() => setNotif((n) => (n && n.ts === p.ts ? null : n)), 8000);
   }
-
-  // 異常偵測（定期檢測）
-  const lastAnomalyCheckRef = useRef(0);
-  useEffect(() => {
-    const checkInterval = setInterval(() => {
-      if (Date.now() - lastAnomalyCheckRef.current > 5 * 60 * 1000) {
-        detectAnomalies(closed, settings, pushNotif);
-        lastAnomalyCheckRef.current = Date.now();
-      }
-    }, 10000);
-    return () => clearInterval(checkInterval);
-  }, [closed, settings, pushNotif]);
 
   const indData = (() => {
     if (candles.length < 30) return null;
@@ -3095,6 +3098,33 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
                   <div style={{ display: "flex", gap: 6 }}>
                     {[[2, "2張(精選)"], [3, "3張(均衡)"], [5, "5張(分散)"]].map(([v, label]) => (
                       <button key={v} onClick={() => setSettings((s) => ({ ...s, perSide: v }))} style={{ flex: 1, background: settings.perSide === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.perSide === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.perSide === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>分批平倉百分比</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 8, lineHeight: 1.5 }}>觸及各 TP 時要平多少 %。三格都留空 = 預設「TP3 觸發才全平」（舊版行為）。範例：填 50/30/20 = 觸 TP1 平50%、觸 TP2 平30%、觸 TP3 平20%。</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {[["tpClosePct1", "TP1"], ["tpClosePct2", "TP2"], ["tpClosePct3", "TP3"]].map(([key, label]) => (
+                      <div key={key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                        <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>{label}</span>
+                        <div style={{ display: "flex", alignItems: "center", background: "#0d1520", border: "1px solid #1a2535", borderRadius: 5, padding: "4px 6px", width: "100%" }}>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            placeholder="—"
+                            value={settings[key] == null ? "" : settings[key]}
+                            onChange={(e) => {
+                              const v = e.target.value === "" ? null : Math.max(0, Math.min(100, Number(e.target.value)));
+                              setSettings((s) => ({ ...s, [key]: v }));
+                            }}
+                            style={{ background: "transparent", border: "none", color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, width: "100%", outline: "none", textAlign: "center" }}
+                          />
+                          <span style={{ color: "#5a6b80", fontSize: 9, marginLeft: 2 }}>%</span>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
