@@ -587,12 +587,13 @@ function TradeCard({ trade, livePrice, onDelete, onClose }) {
 // ═══════════ 全域設定 ═══════════════════════════════════════════════════════
 const SETTINGS_KEY = "cryptex_settings_v1";
 const DEFAULT_SETTINGS = {
-  autoScanMins: 5,      // 自動重掃間隔（分鐘）；0 = 只手動
-  scoreCloseConfirm: true, // 評分平倉需連續兩次低於門檻才平
-  scoreCloseTh: 40,     // 評分平倉門檻
-  scanTopN: 0,          // 掃描範圍：0=全部，其餘=前N大成交量
-  soundOn: false,       // 訊號音效
-  displayMode: "normal", // normal | eyecomfort | hicontrast
+  autoScanMins: 5,
+  scoreCloseConfirm: true,
+  scoreCloseTh: 40,
+  scanTopN: 0,
+  soundOn: false,
+  displayMode: "normal",
+  perSide: 5,            // 每側開單數量：2 / 3 / 5
 };
 function loadSettings() {
   try { const r = localStorage.getItem(SETTINGS_KEY); return r ? { ...DEFAULT_SETTINGS, ...JSON.parse(r) } : { ...DEFAULT_SETTINGS }; } catch { return { ...DEFAULT_SETTINGS }; }
@@ -730,7 +731,7 @@ const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, 
         </div>
       ) : (
         <>
-          <button onClick={() => { if (livePrice != null) onManualClose && onManualClose(trade, livePrice); }} disabled={livePrice == null} style={{ width: "100%", marginTop: 6, background: pnlPct == null ? "#0d1520" : pnlPct >= 0 ? "#0e1f1a" : "#1f1212", border: `1px solid ${pnlPct == null ? "#1a2535" : pnlPct >= 0 ? "#26a69a" : "#ef5350"}55`, borderRadius: 5, color: pnlPct == null ? "#4a5568" : pnlPct >= 0 ? "#26a69a" : "#ef5350", padding: "6px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700, opacity: livePrice == null ? 0.5 : 1 }}>💰 手動止盈平倉{pnlPct != null ? `（現價 ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%）` : "（等待報價）"}</button>
+          <button onClick={() => { if (livePrice != null) onManualClose && onManualClose(trade, livePrice); }} disabled={livePrice == null} style={{ width: "100%", marginTop: 6, background: pnlPct == null ? "#0d1520" : pnlPct >= 0 ? "#0e1f1a" : "#1f1212", border: `1px solid ${pnlPct == null ? "#1a2535" : pnlPct >= 0 ? "#26a69a" : "#ef5350"}55`, borderRadius: 5, color: pnlPct == null ? "#4a5568" : pnlPct >= 0 ? "#26a69a" : "#ef5350", padding: "6px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700, opacity: livePrice == null ? 0.5 : 1 }}>💰 手動平倉{pnlPct != null ? `（現價 ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%）` : "（等待報價）"}</button>
           <button onClick={() => onCancel && onCancel(trade)} style={{ width: "100%", marginTop: 6, background: "transparent", border: "1px solid #3a4658", borderRadius: 5, color: "#5a6b80", padding: "5px 0", fontSize: 10, fontFamily: "monospace" }}>撤銷此單（沒跟到，不計入回測）</button>
         </>
       )}
@@ -863,7 +864,7 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
   useEffect(() => { saveClosedTrades(closed); }, [closed]);
   useEffect(() => { saveAutoTradesTs(lastScanTs); }, [lastScanTs]);
 
-  const PER_SIDE = 5;
+  const PER_SIDE = settings?.perSide ?? 5;
 
   // 即時價格（用 coins 列表）
   useEffect(() => {
@@ -1038,11 +1039,11 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
     // 從進行中移除
     setData((prev) => ({ ...prev, [side]: prev[side].filter((t) => t.id !== trade.id) }));
     // 寫入已結束（reason = 手動止盈，會計入回測與勝率回饋）
-    setClosed((prev) => [computeOutcome(trade, livePrice, "手動止盈"), ...prev].slice(0, 500));
+    setClosed((prev) => [computeOutcome(trade, livePrice, "手動平倉"), ...prev].slice(0, 500));
     const win = (trade.direction === "long" ? livePrice >= trade.entry : trade.entry >= livePrice);
     if (onNotify) onNotify({
       symbol: trade.name || trade.symbol,
-      signal: `手動止盈 · ${win ? "獲利" : "虧損"}平倉`,
+      signal: `手動平倉 · ${win ? "獲利" : "虧損"}出場`,
       color: win ? "#26a69a" : "#f0b90b",
       confidence: trade.finalScore,
       sound: "normal",
@@ -1339,28 +1340,57 @@ function BacktestPanel({ item }) {
           <span style={{ color: "#f0b90b" }}>最大回撤 {s.maxDD.toFixed(1)}%</span>
         </div>
 
-        {/* 權益曲線 */}
+        {/* 權益曲線 + 買入持有對比 */}
         {result.equity && result.equity.length > 1 && (() => {
           const eq = result.equity;
           const vals = eq.map((e) => e.cum);
-          const min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+          // 買入持有：從第一筆交易到最後一筆，用各筆進出場的時間軸估算
+          const bhReturn = result.trades && result.trades.length >= 2
+            ? (() => {
+                const first = result.trades[0];
+                const last = result.trades[result.trades.length - 1];
+                if (first?.entryPrice && last?.exitPrice) {
+                  return ((last.exitPrice - first.entryPrice) / first.entryPrice) * 100;
+                }
+                return null;
+              })()
+            : null;
+          // 買入持有等權基準線（線性從0到bhReturn）
+          const bhPts = bhReturn != null ? eq.map((_, i) => {
+            const bh = (i / (eq.length - 1)) * bhReturn;
+            return bh;
+          }) : null;
+          const allVals = bhPts ? [...vals, ...bhPts] : vals;
+          const min = Math.min(0, ...allVals), max = Math.max(0, ...allVals);
           const range = max - min || 1;
-          const W = 280, H = 70;
-          const pts = eq.map((e, i) => {
-            const x = (i / (eq.length - 1)) * W;
-            const y = H - ((e.cum - min) / range) * H;
-            return `${x.toFixed(1)},${y.toFixed(1)}`;
-          }).join(" ");
+          const W = 280, H = 80;
+          const toY = (v) => H - ((v - min) / range) * H;
+          const pts = eq.map((e, i) => `${((i / (eq.length - 1)) * W).toFixed(1)},${toY(e.cum).toFixed(1)}`).join(" ");
+          const bhLine = bhPts ? bhPts.map((v, i) => `${((i / (bhPts.length - 1)) * W).toFixed(1)},${toY(v).toFixed(1)}`).join(" ") : null;
           const lastCum = vals[vals.length - 1];
           const lineCol = lastCum >= 0 ? "#26a69a" : "#ef5350";
-          const zeroY = H - ((0 - min) / range) * H;
+          const zeroY = toY(0);
           return (
             <div style={{ background: "#0a1218", borderRadius: 6, padding: 8 }}>
-              <div style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace", marginBottom: 4 }}>累積權益曲線（%）</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>累積權益曲線（%）</span>
+                {bhReturn != null && (
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <span style={{ color: lineCol, fontSize: 9, fontFamily: "monospace" }}>● 策略 {lastCum >= 0 ? "+" : ""}{lastCum.toFixed(1)}%</span>
+                    <span style={{ color: "#787b86", fontSize: 9, fontFamily: "monospace" }}>● 買入持有 {bhReturn >= 0 ? "+" : ""}{bhReturn.toFixed(1)}%</span>
+                  </div>
+                )}
+              </div>
               <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block" }}>
                 <line x1="0" y1={zeroY} x2={W} y2={zeroY} stroke="#1a2535" strokeWidth="1" strokeDasharray="3 3" />
+                {bhLine && <polyline points={bhLine} fill="none" stroke="#787b86" strokeWidth="1" strokeDasharray="4 3" opacity="0.7" />}
                 <polyline points={pts} fill="none" stroke={lineCol} strokeWidth="1.5" style={{ filter: `drop-shadow(0 0 3px ${lineCol}88)` }} />
               </svg>
+              {bhReturn != null && (
+                <div style={{ color: lastCum > bhReturn ? "#26a69a" : "#ef5350", fontSize: 8, fontFamily: "monospace", marginTop: 4, textAlign: "right" }}>
+                  {lastCum > bhReturn ? `策略跑贏買入持有 +${(lastCum - bhReturn).toFixed(1)}%` : `策略落後買入持有 ${(lastCum - bhReturn).toFixed(1)}%`}
+                </div>
+              )}
             </div>
           );
         })()}
@@ -1709,6 +1739,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
   const [notifOn, setNotifOn] = useState(false);
   const [status, setStatus] = useState("載入中...");
+  const [loadError, setLoadError] = useState(false);
   const [j10flash, setJ10flash] = useState(undefined);
   const [periodChg, setPeriodChg] = useState(null);
   const [recs, setRecs] = useState(null);
@@ -1832,24 +1863,27 @@ export default function App() {
   useEffect(() => {
     let cancel = false;
     async function run() {
-      const list = await loadMarket("crypto");
-      if (cancel || !Array.isArray(list)) return;
-      // 保底：若已有清單，且這次抓到的數量明顯偏少（< 現有 70%），判定為不完整，保留舊清單
-      const prevCount = coinCountRef.current;
-      if (prevCount > 0 && list.length > 0 && list.length < prevCount * 0.7) {
-        // 不更新 coins，只更新狀態提示
-        setStatus(`${prevCount} 商品 · 即時`);
-        return;
+      try {
+        const list = await loadMarket("crypto");
+        if (cancel || !Array.isArray(list)) return;
+        const prevCount = coinCountRef.current;
+        if (prevCount > 0 && list.length > 0 && list.length < prevCount * 0.7) {
+          setStatus(`${prevCount} 商品 · 即時`);
+          setLoadError(false);
+          return;
+        }
+        if (list.length === 0) {
+          if (prevCount === 0) { setStatus("載入失敗"); setLoadError(true); }
+          return;
+        }
+        coinCountRef.current = list.length;
+        setCoins(list);
+        setStatus(`${list.length} 商品 · 即時`);
+        setLoadError(false);
+        setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
+      } catch {
+        if (!cancel) { setStatus("連線失敗，點擊重試"); setLoadError(true); }
       }
-      if (list.length === 0) {
-        // 完全沒抓到就維持現狀
-        if (prevCount === 0) setStatus("來源連線中");
-        return;
-      }
-      coinCountRef.current = list.length;
-      setCoins(list);
-      setStatus(`${list.length} 商品 · 即時`);
-      setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null);
     }
     run();
     if (search) return () => { cancel = true; };
@@ -2227,7 +2261,9 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
         <div style={{ display: "flex", alignItems: "center", gap: 7, marginLeft: "auto" }}>
           {smc && (smc.signal.includes("做多") || smc.signal.includes("做空")) && <span className="mono breathe" style={{ color: smc.color, fontSize: 10, fontWeight: 700, border: `1px solid ${smc.color}`, borderRadius: 5, padding: "2px 7px", boxShadow: `0 0 12px -3px ${smc.color}` }}>{smc.signal}</span>}
           <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#3fb950", boxShadow: "0 0 8px #3fb950" }} />
-          <span className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>{status}</span>
+          {loadError
+            ? <button onClick={() => { setLoadError(false); setStatus("重試中..."); loadMarket("crypto").then((list) => { if (Array.isArray(list) && list.length > 0) { coinCountRef.current = list.length; setCoins(list); setStatus(`${list.length} 商品 · 即時`); setSelected((prev) => (prev && list.find((c) => c.symbol === prev.symbol)) || list[0] || null); } else { setStatus("連線失敗，點擊重試"); setLoadError(true); } }).catch(() => { setStatus("連線失敗，點擊重試"); setLoadError(true); }); }} style={{ background: "#3a1a1a", border: "1px solid #ef5350", borderRadius: 4, color: "#ef5350", padding: "2px 8px", fontSize: 9, fontFamily: "monospace", cursor: "pointer" }}>⚠ 連線失敗 · 點擊重試</button>
+            : <span className="mono" style={{ color: "#5a6b80", fontSize: 9 }}>{status}</span>}
         </div>
       </div>
 
@@ -2412,12 +2448,12 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
 
                 {sigHistory[selected?.symbol]?.length > 1 && (
                   <Section title="🕐 訊號歷史" color="#a78bfa" defaultOpen={false}>
-                    {sigHistory[selected.symbol].map((h, i) => {
+                    {sigHistory[selected?.symbol].map((h, i) => {
                       const c = h.signal.includes("做多") ? "#26a69a" : h.signal.includes("做空") ? "#ef5350" : "#787b86";
                       const ago = Math.round((Date.now() - h.ts) / 60000);
                       const agoStr = ago < 60 ? `${ago}分鐘前` : ago < 1440 ? `${Math.round(ago / 60)}小時前` : `${Math.round(ago / 1440)}天前`;
                       return (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: i < sigHistory[selected.symbol].length - 1 ? "1px solid #111824" : "none" }}>
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: i < sigHistory[selected?.symbol].length - 1 ? "1px solid #111824" : "none" }}>
                           <span style={{ color: c, fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 70 }}>{h.signal}</span>
                           <span style={{ color: "#5a6b80", fontSize: 9, fontFamily: "monospace" }}>信心 {h.confidence}%</span>
                           <span style={{ marginLeft: "auto", color: i === 0 ? "#58a6ff" : "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{i === 0 ? "最新 · " : ""}{agoStr}</span>
@@ -2737,6 +2773,16 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
                   <div style={{ display: "flex", gap: 6 }}>
                     {[[100, "前100"], [200, "前200"], [0, "全部"]].map(([v, label]) => (
                       <button key={v} onClick={() => setSettings((s) => ({ ...s, scanTopN: v }))} style={{ flex: 1, background: settings.scanTopN === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.scanTopN === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.scanTopN === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>每側開單數量</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 6 }}>做多和做空各幾張。少而精勝率較高，建議 2-3 張。</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {[[2, "2張(精選)"], [3, "3張(均衡)"], [5, "5張(分散)"]].map(([v, label]) => (
+                      <button key={v} onClick={() => setSettings((s) => ({ ...s, perSide: v }))} style={{ flex: 1, background: settings.perSide === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.perSide === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.perSide === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
                     ))}
                   </div>
                 </div>
