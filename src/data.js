@@ -1409,3 +1409,28 @@ export async function scanAutoTrades(coins, top = 99999, perSide = 5, onProgress
 
   return { longs, shorts, scannedStage1: stage1.length, scannedStage2: refined.length, ts: Date.now() };
 }
+
+// 載入加密新聞（簡化版，基於CoinGecko）
+export async function loadNews(symbol) {
+  try {
+    const coin = symbol.replace("-USDT", "").toLowerCase();
+    const response = await fetch(`https://api.coingecko.com/api/v3/news?coins=${coin}`, {
+      headers: { "User-Agent": "CRYPTEX" }
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data) ? data.slice(0, 3) : [];
+  } catch { return []; }
+}
+
+// 發送Telegram提醒（IFTTT Webhook簡化版）
+export async function sendTelegramNotif(webhookKey, message) {
+  if (!webhookKey) return;
+  try {
+    await fetch(`https://maker.ifttt.com/trigger/cryptex_alert/with/key/${webhookKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value1: message })
+    });
+  } catch {}
+}
