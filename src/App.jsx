@@ -4,6 +4,7 @@ import {
   calcSMA, calcMACD, calcRSI, calcKDJ,
   loadJin10Flash, subscribeCryptoTicker, loadPeriodChanges, subscribeLiquidations,
   scanRecommendations, scanAnomalies, analyzeMultiAI, scanExplosive, scanAutoTrades, backtestMTF,
+  analyzeBTCTrend, getBTCCorrelationOrDefault, computeBTCAdjust,
 } from "./data.js";
 
 const INTERVALS = ["15m", "1H", "4H", "1D"];
@@ -600,6 +601,8 @@ const DEFAULT_SETTINGS = {
   tpClosePct1: null,
   tpClosePct2: null,
   tpClosePct3: null,
+  // BTC 趨勢過濾：off/weak/mid/strong
+  btcFilterLevel: "mid",
 };
 function loadSettings() {
   try { const r = localStorage.getItem(SETTINGS_KEY); return r ? { ...DEFAULT_SETTINGS, ...JSON.parse(r) } : { ...DEFAULT_SETTINGS }; } catch { return { ...DEFAULT_SETTINGS }; }
@@ -669,7 +672,7 @@ function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 
-const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, onShare, onSetAlert, onManualClose }) {
+const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, onShare, onSetAlert, onManualClose, btcNowState }) {
   const isLong = trade.direction === "long";
   const dirColor = isLong ? "#26a69a" : "#ef5350";
   const dirLabel = isLong ? "做多" : "做空";
@@ -708,6 +711,20 @@ const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, 
         {statusBadge && <span style={{ color: statusBadge.color, fontSize: 9, fontFamily: "monospace", fontWeight: 700, border: `1px solid ${statusBadge.color}`, padding: "1px 6px", borderRadius: 4 }}>{statusBadge.label}</span>}
         <span style={{ marginLeft: "auto", color: "#4a5568", fontSize: 9, fontFamily: "monospace" }}>{new Date(trade.ts).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
       </div>
+
+      {/* BTC 狀態警示：開單時 vs 現在方向不同時提醒（AutoTradeCard 內） */}
+      {trade.btcState && btcNowState && trade.btcState.direction !== "neutral" && btcNowState.direction !== "neutral" && trade.btcState.direction !== btcNowState.direction && (
+        <div style={{ background: "#3a2a1a", border: "1px solid #f0b90b", borderRadius: 5, padding: "4px 8px", marginBottom: 6, fontSize: 9, color: "#f0b90b", fontFamily: "monospace" }}>
+          ⚠️ BTC 從{trade.btcState.direction === "up" ? "有利" : "逆勢"}轉為{btcNowState.direction === "up" ? "有利" : "逆勢"}
+        </div>
+      )}
+
+      {/* BTC 調整分顯示 */}
+      {trade.btcAdjust != null && Math.abs(trade.btcAdjust) > 0.5 && (
+        <div style={{ fontSize: 8, color: trade.btcAdjust >= 0 ? "#26a69a" : "#ef5350", fontFamily: "monospace", marginBottom: 4 }}>
+          BTC: {trade.btcAdjust >= 0 ? "+" : ""}{trade.btcAdjust.toFixed(1)} 分（相關性 {(trade.btcCorr ?? 0.7).toFixed(2)}）
+        </div>
+      )}
 
       {pnlPct != null && (
         <div style={{ textAlign: "center", padding: "6px 0", marginBottom: 6, background: pnlPct >= 0 ? "#26a69a14" : "#ef535014", borderRadius: 6 }}>
@@ -949,6 +966,21 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
   const lowScoreCountRef = useRef({});
   const [sortMode, setSortMode] = useState("score"); // score | pnl
   const [shareTarget, setShareTarget] = useState(null);
+  const [btcNowState, setBtcNowState] = useState(null);
+
+  // 定期更新目前 BTC 狀態（每 5 分鐘）給卡片警示用
+  useEffect(() => {
+    let cancel = false;
+    const update = async () => {
+      try {
+        const s = await analyzeBTCTrend();
+        if (!cancel) setBtcNowState(s);
+      } catch {}
+    };
+    update();
+    const iv = setInterval(update, 5 * 60 * 1000);
+    return () => { cancel = true; clearInterval(iv); };
+  }, []);
 
   // 掃描排行：計算幣種出現在多個掃描的次數
   const computeScanRanking = useMemo(() => {
@@ -1097,6 +1129,30 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
       })();
       const scanCount = settings.scanTopN > 0 ? Math.min(settings.scanTopN, coins.length) : coins.length;
       const r = await scanAutoTrades(coins, scanCount, PER_SIDE, (p) => setScanProgress(p), weights);
+
+      // 套用 BTC 趨勢過濾（方案 D：相關性加權）
+      let btcTrend = null;
+      if (settings.btcFilterLevel && settings.btcFilterLevel !== "off") {
+        try { btcTrend = await analyzeBTCTrend(); } catch { btcTrend = null; }
+      }
+      const applyBTCAdjust = (list, isLong) => {
+        if (!btcTrend || settings.btcFilterLevel === "off") return list;
+        return list.map((t) => {
+          const item = { name: t.symbol.replace("-USDT", ""), symbol: t.symbol, cat: "crypto" };
+          const corr = getBTCCorrelationOrDefault(item);
+          const adjust = computeBTCAdjust(btcTrend, settings.btcFilterLevel, isLong, corr);
+          return {
+            ...t,
+            finalScore: (t.finalScore || 0) + adjust,
+            btcAdjust: adjust,
+            btcCorr: corr,
+            btcState: btcTrend, // 存開單瞬間的 BTC 狀態
+          };
+        }).sort((a, b) => b.finalScore - a.finalScore).slice(0, PER_SIDE);
+      };
+      r.longs = applyBTCAdjust(r.longs, true);
+      r.shorts = applyBTCAdjust(r.shorts, false);
+
       // 新掃描結果建立 symbol→finalScore 對照，用於評分過低平倉
       const freshScore = {};
       [...r.longs, ...r.shorts].forEach((t) => { freshScore[t.symbol] = t.finalScore; });
@@ -1262,12 +1318,12 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
 
       <Section title={`🟢 做多建議 (${data.longs.length}/${PER_SIDE})`} color="#26a69a" defaultOpen={true}>
         {data.longs.length === 0 && !scanning && <EmptyState text="暫無符合條件的做多標的" hint="等下次掃描或調整門檻" />}
-        {sortTrades(data.longs).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onManualClose={manualClose} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
+        {sortTrades(data.longs).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onManualClose={manualClose} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} btcNowState={btcNowState} />)}
       </Section>
 
       <Section title={`🔴 做空建議 (${data.shorts.length}/${PER_SIDE})`} color="#ef5350" defaultOpen={true}>
         {data.shorts.length === 0 && !scanning && <EmptyState text="暫無符合條件的做空標的" hint="等下次掃描或調整門檻" />}
-        {sortTrades(data.shorts).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onManualClose={manualClose} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} />)}
+        {sortTrades(data.shorts).map((t) => <AutoTradeCard key={t.id} trade={t} livePrice={livePrices[t.symbol]} onCancel={cancelTrade} onManualClose={manualClose} onShare={(tr, lp) => setShareTarget({ trade: tr, livePrice: lp })} onSetAlert={onSetAlert} btcNowState={btcNowState} />)}
       </Section>
 
       {lastScanTs > 0 && <div style={{ color: "#4a5568", fontSize: 9, fontFamily: "monospace", textAlign: "center", padding: "4px" }}>上次掃描：{new Date(lastScanTs).toLocaleTimeString()}</div>}
@@ -3146,6 +3202,16 @@ body.hicontrast{filter:contrast(1.18) saturate(1.12)}
                           <span style={{ color: "#5a6b80", fontSize: 9, marginLeft: 2 }}>%</span>
                         </div>
                       </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, marginBottom: 6 }}>BTC 趨勢過濾</div>
+                  <div style={{ color: "#4a5568", fontSize: 9, marginBottom: 8, lineHeight: 1.5 }}>依 BTC 4H 趨勢調整推薦分數，並依該幣與 BTC 的相關性加權。BTC 逆勢時扣多單分、順勢時加多單分；相關性高的幣（如 ETH/SOL）影響大，低相關（如某些 MEME）影響小。</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {[["off", "關"], ["weak", "弱(±8)"], ["mid", "中(±15)"], ["strong", "強(±25)"]].map(([v, label]) => (
+                      <button key={v} onClick={() => setSettings((s) => ({ ...s, btcFilterLevel: v }))} style={{ flex: 1, background: settings.btcFilterLevel === v ? "#0f1e2e" : "#0d1520", border: `1px solid ${settings.btcFilterLevel === v ? "#58a6ff" : "#1a2535"}`, borderRadius: 5, color: settings.btcFilterLevel === v ? "#58a6ff" : "#5a6b80", padding: "7px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{label}</button>
                     ))}
                   </div>
                 </div>
