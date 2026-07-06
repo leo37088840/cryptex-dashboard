@@ -1131,27 +1131,31 @@ function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
       const r = await scanAutoTrades(coins, scanCount, PER_SIDE, (p) => setScanProgress(p), weights);
 
       // 套用 BTC 趨勢過濾（方案 D：相關性加權）
-      let btcTrend = null;
       if (settings.btcFilterLevel && settings.btcFilterLevel !== "off") {
-        try { btcTrend = await analyzeBTCTrend(); } catch { btcTrend = null; }
-      }
-      const applyBTCAdjust = (list, isLong) => {
-        if (!btcTrend || settings.btcFilterLevel === "off") return list;
-        return list.map((t) => {
-          const item = { name: t.symbol.replace("-USDT", ""), symbol: t.symbol, cat: "crypto" };
-          const corr = getBTCCorrelationOrDefault(item);
-          const adjust = computeBTCAdjust(btcTrend, settings.btcFilterLevel, isLong, corr);
-          return {
-            ...t,
-            finalScore: (t.finalScore || 0) + adjust,
-            btcAdjust: adjust,
-            btcCorr: corr,
-            btcState: btcTrend, // 存開單瞬間的 BTC 狀態
+        let btcTrend = null;
+        try { btcTrend = await analyzeBTCTrend(); } catch (e) { btcTrend = null; }
+        if (btcTrend) {
+          const lvl = settings.btcFilterLevel;
+          const adjustList = (list, isLong) => {
+            const out = [];
+            for (const t of list) {
+              const item = { name: t.symbol.replace("-USDT", ""), symbol: t.symbol, cat: "crypto" };
+              const corr = getBTCCorrelationOrDefault(item);
+              const adjust = computeBTCAdjust(btcTrend, lvl, isLong, corr);
+              out.push(Object.assign({}, t, {
+                finalScore: (t.finalScore || 0) + adjust,
+                btcAdjust: adjust,
+                btcCorr: corr,
+                btcState: btcTrend,
+              }));
+            }
+            out.sort((a, b) => b.finalScore - a.finalScore);
+            return out.slice(0, PER_SIDE);
           };
-        }).sort((a, b) => b.finalScore - a.finalScore).slice(0, PER_SIDE);
-      };
-      r.longs = applyBTCAdjust(r.longs, true);
-      r.shorts = applyBTCAdjust(r.shorts, false);
+          r.longs = adjustList(r.longs, true);
+          r.shorts = adjustList(r.shorts, false);
+        }
+      }
 
       // 新掃描結果建立 symbol→finalScore 對照，用於評分過低平倉
       const freshScore = {};
