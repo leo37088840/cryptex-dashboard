@@ -1512,16 +1512,15 @@ export function getBTCCorrelationCached(symbol) {
 }
 
 // 背景計算並存快取（不 await 也 OK，掃描時用預設值 0.7）
-let btcCloses30dCache = null;
-let btcCloses30dTs = 0;
+const _btcClosesCache = { data: null, ts: 0 };
 async function getBTCCloses30d() {
-  if (btcCloses30dCache && Date.now() - btcCloses30dTs < CORR_TTL) return btcCloses30dCache;
+  if (_btcClosesCache.data && Date.now() - _btcClosesCache.ts < CORR_TTL) return _btcClosesCache.data;
   const btcItem = { name: "BTC", symbol: "BTC-USDT", binanceSymbol: "BTCUSDT", cat: "crypto" };
   const c = await loadKlines(btcItem, "1D");
   if (!c || c.length < 20) return null;
-  btcCloses30dCache = c.slice(-30).map((x) => x.c);
-  btcCloses30dTs = Date.now();
-  return btcCloses30dCache;
+  _btcClosesCache.data = c.slice(-30).map((x) => x.c);
+  _btcClosesCache.ts = Date.now();
+  return _btcClosesCache.data;
 }
 
 // 計算並存快取（單支）
@@ -1550,8 +1549,8 @@ export function getBTCCorrelationOrDefault(item) {
   const cached = getBTCCorrelationCached(item.symbol);
   if (cached != null) return cached;
   // 背景計算（不 await）
-  computeAndCacheBTCCorrelation(item);
-  return 0.7; // 預設：大多數山寨與 BTC 相關性高
+  try { computeAndCacheBTCCorrelation(item).catch(() => {}); } catch (e) {}
+  return 0.7;
 }
 
 // 計算 BTC 調整分
