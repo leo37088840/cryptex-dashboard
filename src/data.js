@@ -1434,3 +1434,134 @@ export async function sendTelegramNotif(webhookKey, message) {
     });
   } catch {}
 }
+
+// ═══════════ BTC 趨勢分析 + 相關性 ═══════════════════════════
+// 分析 BTC 4H 趨勢，回傳 { direction: "up"/"down"/"neutral", strength: 0~1, macdHist }
+export async function analyzeBTCTrend() {
+  try {
+    const btcItem = { name: "BTC", symbol: "BTC-USDT", binanceSymbol: "BTCUSDT", cat: "crypto" };
+    const candles = await loadKlines(btcItem, "4H");
+    if (!candles || candles.length < 60) return { direction: "neutral", strength: 0, macdHist: 0 };
+    const closes = candles.map((c) => c.c);
+    const macd = calcMACD(closes);
+    if (!macd || macd.length < 3) return { direction: "neutral", strength: 0, macdHist: 0 };
+    const last = macd[macd.length - 1];
+    const prev = macd[macd.length - 2];
+    // MACD 直方圖判斷方向
+    const hist = last.hist ?? 0;
+    const prevHist = prev.hist ?? 0;
+    // 短期漲跌（最近 6 根 4H = 1 天）
+    const now = closes[closes.length - 1];
+    const ago = closes[Math.max(0, closes.length - 7)];
+    const chg = (now - ago) / ago;
+    // 方向判斷
+    let direction = "neutral";
+    if (hist > 0 && chg > 0.005) direction = "up";
+    else if (hist < 0 && chg < -0.005) direction = "down";
+    else if (Math.abs(chg) < 0.005) direction = "neutral";
+    else direction = chg > 0 ? "up" : "down";
+    // 強度：|hist| 標準化 + |chg| 標準化，各 50%
+    const histStr = Math.min(Math.abs(hist) / (Math.abs(now) * 0.001), 1);
+    const chgStr = Math.min(Math.abs(chg) / 0.03, 1);
+    const strength = (histStr + chgStr) / 2;
+    return { direction, strength, macdHist: hist, chg24h: chg };
+  } catch {
+    return { direction: "neutral", strength: 0, macdHist: 0 };
+  }
+}
+
+// Pearson 相關係數
+export function calcCorrelation(arr1, arr2) {
+  if (!arr1 || !arr2 || arr1.length < 5 || arr1.length !== arr2.length) return 0;
+  const n = arr1.length;
+  const m1 = arr1.reduce((s, v) => s + v, 0) / n;
+  const m2 = arr2.reduce((s, v) => s + v, 0) / n;
+  let num = 0, d1 = 0, d2 = 0;
+  for (let i = 0; i < n; i++) {
+    const x = arr1[i] - m1;
+    const y = arr2[i] - m2;
+    num += x * y;
+    d1 += x * x;
+    d2 += y * y;
+  }
+  const denom = Math.sqrt(d1 * d2);
+  if (denom === 0) return 0;
+  return num / denom;
+}
+
+// 取得某支幣跟 BTC 的 30 天日線相關性（含 localStorage 快取 24H）
+// 沒快取時回傳預設值 0.7（大多數山寨跟 BTC 高度相關），並在背景計算真實值
+const CORR_CACHE_KEY = "cryptex_btc_corr_v1";
+const CORR_TTL = 24 * 60 * 60 * 1000; // 24 小時
+
+function loadCorrCache() {
+  try { return JSON.parse(localStorage.getItem(CORR_CACHE_KEY) || "{}"); }
+  catch { return {}; }
+}
+function saveCorrCache(cache) {
+  try { localStorage.setItem(CORR_CACHE_KEY, JSON.stringify(cache)); } catch {}
+}
+
+// 同步查快取（不觸發網路請求）
+export function getBTCCorrelationCached(symbol) {
+  const cache = loadCorrCache();
+  const entry = cache[symbol];
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CORR_TTL) return null;
+  return entry.corr;
+}
+
+// 背景計算並存快取（不 await 也 OK，掃描時用預設值 0.7）
+let btcCloses30dCache = null;
+let btcCloses30dTs = 0;
+async function getBTCCloses30d() {
+  if (btcCloses30dCache && Date.now() - btcCloses30dTs < CORR_TTL) return btcCloses30dCache;
+  const btcItem = { name: "BTC", symbol: "BTC-USDT", binanceSymbol: "BTCUSDT", cat: "crypto" };
+  const c = await loadKlines(btcItem, "1D");
+  if (!c || c.length < 20) return null;
+  btcCloses30dCache = c.slice(-30).map((x) => x.c);
+  btcCloses30dTs = Date.now();
+  return btcCloses30dCache;
+}
+
+// 計算並存快取（單支）
+export async function computeAndCacheBTCCorrelation(item) {
+  try {
+    const btcCloses = await getBTCCloses30d();
+    if (!btcCloses) return null;
+    if (item.symbol === "BTC-USDT") return 1; // 自己跟自己
+    const c = await loadKlines(item, "1D");
+    if (!c || c.length < 20) return null;
+    const coinCloses = c.slice(-30).map((x) => x.c);
+    // 取兩者共同的最短長度
+    const len = Math.min(btcCloses.length, coinCloses.length);
+    const corr = calcCorrelation(btcCloses.slice(-len), coinCloses.slice(-len));
+    // 存快取
+    const cache = loadCorrCache();
+    cache[item.symbol] = { corr, ts: Date.now() };
+    saveCorrCache(cache);
+    return corr;
+  } catch { return null; }
+}
+
+// 掃描時用：拿相關性，沒有快取就回預設值 0.7 並在背景計算
+export function getBTCCorrelationOrDefault(item) {
+  if (item.symbol === "BTC-USDT") return 1;
+  const cached = getBTCCorrelationCached(item.symbol);
+  if (cached != null) return cached;
+  // 背景計算（不 await）
+  computeAndCacheBTCCorrelation(item);
+  return 0.7; // 預設：大多數山寨與 BTC 相關性高
+}
+
+// 計算 BTC 調整分
+// btcTrend: analyzeBTCTrend 回傳；level: "off"/"weak"/"mid"/"strong"；isLong: 是否做多
+export function computeBTCAdjust(btcTrend, level, isLong, correlation) {
+  if (!btcTrend || level === "off") return 0;
+  if (btcTrend.direction === "neutral") return 0;
+  const base = level === "weak" ? 8 : level === "strong" ? 25 : 15;
+  const dirSign = btcTrend.direction === "up" ? 1 : -1;
+  const posSign = isLong ? 1 : -1;
+  // 相關性越高，BTC 影響越大；相關性負值時反向
+  return base * btcTrend.strength * correlation * dirSign * posSign;
+}
