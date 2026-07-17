@@ -67,11 +67,11 @@ export function syncNewClosedToJournal(newlyClosed) {
   } catch {}
 }
 
-export export function loadAutoTradesTs() {
+export function loadAutoTradesTs() {
   try { return parseInt(localStorage.getItem(AUTO_TRADES_TS_KEY) || "0", 10); } catch { return 0; }
 }
 
-export export function saveAutoTradesTs(ts) {
+export function saveAutoTradesTs(ts) {
   try { localStorage.setItem(AUTO_TRADES_TS_KEY, String(ts)); } catch {}
 }
 

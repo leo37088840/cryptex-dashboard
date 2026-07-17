@@ -4,8 +4,9 @@ import Section from "../../components/Section.jsx";
 import EmptyState from "../../components/EmptyState.jsx";
 import TradeForm from "./TradeForm.jsx";
 import TradeCard from "./TradeCard.jsx";
+import AutoTrades from "../AutoTrades/AutoTrades.jsx";
 
-export default function TradeJournal({ coins, defaultSymbol, onNotify, onSetAlert, settings }) {
+export default function TradeJournal({ coins, defaultSymbol, onNotify, onSetAlert, settings, recs, anomalies, explosive }) {
   const [journalSubTab, setJournalSubTab] = useState("auto");
   const [trades, setTrades] = useState(() => loadTrades());
   const [showForm, setShowForm] = useState(false);
@@ -47,7 +48,7 @@ export default function TradeJournal({ coins, defaultSymbol, onNotify, onSetAler
         ))}
       </div>
 
-      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} onSetAlert={onSetAlert} settings={settings} />}
+      {journalSubTab === "auto" && <AutoTrades coins={coins} onNotify={onNotify} onSetAlert={onSetAlert} settings={settings} recs={recs} anomalies={anomalies} explosive={explosive} />}
 
       {journalSubTab === "manual" && <>
       <div style={{ background: "#0d1520", border: "1px solid #1a2535", borderRadius: 8, padding: 10, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>

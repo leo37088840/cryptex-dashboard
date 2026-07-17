@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, memo } from "react";
 import Section from "../../components/Section.jsx";
+import Gauge from "../../components/Gauge.jsx";
 import { pnlColor, fmtNum, fmtFeedTime } from "../../utils/format.js";
 
 export default function MarketOverview({ recs, liquidations, coins }) {

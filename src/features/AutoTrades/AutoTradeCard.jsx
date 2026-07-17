@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, memo } from "react";
-import { pnlColor, fmtPrice, fmtNum } from "../../utils/format.js";
+import { pnlColor, fmtPrice, fmtNum, scoreColor } from "../../utils/format.js";
 
 const AutoTradeCard = memo(function AutoTradeCard({ trade, livePrice, onCancel, onShare, onSetAlert, onManualClose, btcNowState }) {
   const isLong = trade.direction === "long";

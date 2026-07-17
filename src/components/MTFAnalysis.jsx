@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo, memo } from "react";
 import Section from "./Section.jsx";
 import Gauge from "./Gauge.jsx";
-import { scoreColor } from "../utils/format.js";
+import IndRow from "./IndRow.jsx";
+import { scoreColor, fmtPrice } from "../utils/format.js";
 
 export default function MTFAnalysis({ smcMulti, smc }) {
   const [openTf, setOpenTf] = useState(null);

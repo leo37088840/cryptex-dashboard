@@ -19,7 +19,7 @@ import ClosedTradesSection from "./ClosedTradesSection.jsx";
 import DailyBacktest from "./DailyBacktest.jsx";
 import WinRateFeedback from "./WinRateFeedback.jsx";
 
-export default function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
+export default function AutoTrades({ coins, onNotify, onSetAlert, settings, recs, anomalies, explosive }) {
   const [data, setData] = useState(() => {
     const d = loadAutoTrades();
     d.longs = (d.longs || []).map(t => ({ ...t, id: t.id || `${t.symbol}-${t.ts}` }));
@@ -51,24 +51,29 @@ export default function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
     return () => { cancel = true; clearInterval(iv); };
   }, []);
 
-  // 掃描排行：計算幣種出現在多個掃描的次數
+  // 掃描排行：計算幣種出現在多個掃描的次數（自動推薦 + 推薦掃描 + 警報掃描 + 爆發掃描）
   const computeScanRanking = useMemo(() => {
     const ranking = new Map();
     const addToRanking = (items, category) => {
       if (!items || !Array.isArray(items)) return;
       items.forEach(item => {
-        const sym = item.symbol;
-        if (!ranking.has(sym)) ranking.set(sym, { symbol: sym, name: item.name, cats: new Set(), score: 0 });
+        const sym = item.symbol || item.name;
+        if (!sym) return;
+        if (!ranking.has(sym)) ranking.set(sym, { symbol: sym, name: item.name || item.symbol, cats: new Set(), score: 0 });
         ranking.get(sym).cats.add(category);
       });
     };
-    addToRanking(data.longs, "推薦多");
-    addToRanking(data.shorts, "推薦空");
+    addToRanking(data.longs, "自動多");
+    addToRanking(data.shorts, "自動空");
+    addToRanking(recs, "推薦");     // 從掃描頁的推薦掃描
+    addToRanking(anomalies, "警報"); // 警報掃描
+    addToRanking(explosive, "爆發"); // 爆發掃描
     return Array.from(ranking.values())
       .map(r => ({ ...r, score: r.cats.size }))
+      .filter(r => r.score >= 2) // 只顯示至少 2 種掃描都有的（真正共振）
       .sort((a, b) => b.score - a.score)
       .slice(0, 15);
-  }, [data]);
+  }, [data, recs, anomalies, explosive]);
 
   // 依現價計算單子未實現盈虧%
   const livePnl = (t) => {
@@ -404,16 +409,17 @@ export default function AutoTrades({ coins, onNotify, onSetAlert, settings }) {
       {/* 掃描排行（多掃描共振） */}
       {computeScanRanking.length > 0 && (
         <Section title="📊 掃描排行（共振幣種）" color="#a78bfa" defaultOpen={false}>
-          <div style={{ fontSize: 9, color: "#5a6b80", marginBottom: 8, lineHeight: 1.4 }}>出現在多個掃描的幣種排行。🔥 標記：3種掃描都出現；★ 2種；● 1種。</div>
+          <div style={{ fontSize: 9, color: "#5a6b80", marginBottom: 8, lineHeight: 1.4 }}>同時出現在多個掃描的幣種（真正共振訊號）。🔥 4種以上；★ 3種；● 2種。共振越多越值得關注。</div>
           {computeScanRanking.map((item, idx) => (
             <div key={item.symbol} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: idx < 3 ? "#0f1e2e" : "#0a1218", borderRadius: 4, marginBottom: 4 }}>
-              <span style={{ color: item.score >= 3 ? "#ff6b35" : item.score >= 2 ? "#ffd700" : "#c9d1d9", fontSize: 12, fontWeight: 700, minWidth: 20 }}>
-                {item.score >= 3 ? "🔥" : item.score >= 2 ? "★" : "●"}
+              <span style={{ color: item.score >= 4 ? "#ff6b35" : item.score >= 3 ? "#ffd700" : "#c9d1d9", fontSize: 12, fontWeight: 700, minWidth: 20 }}>
+                {item.score >= 4 ? "🔥" : item.score >= 3 ? "★" : "●"}
               </span>
               <span style={{ color: "#c9d1d9", fontSize: 11, fontFamily: "monospace", fontWeight: 700, minWidth: 80 }}>{item.name || item.symbol}</span>
               <div style={{ display: "flex", gap: 4, flex: 1 }}>
-                {item.cats.has("推薦多") && <span style={{ fontSize: 7, background: "#26a69a33", color: "#26a69a", padding: "1px 4px", borderRadius: 2 }}>推多</span>}
-                {item.cats.has("推薦空") && <span style={{ fontSize: 7, background: "#ef535033", color: "#ef5350", padding: "1px 4px", borderRadius: 2 }}>推空</span>}
+                {item.cats.has("自動多") && <span style={{ fontSize: 7, background: "#26a69a33", color: "#26a69a", padding: "1px 4px", borderRadius: 2 }}>自動多</span>}
+                {item.cats.has("自動空") && <span style={{ fontSize: 7, background: "#ef535033", color: "#ef5350", padding: "1px 4px", borderRadius: 2 }}>自動空</span>}
+                {item.cats.has("推薦") && <span style={{ fontSize: 7, background: "#58a6ff33", color: "#58a6ff", padding: "1px 4px", borderRadius: 2 }}>推薦</span>}
                 {item.cats.has("警報") && <span style={{ fontSize: 7, background: "#f0b90b33", color: "#f0b90b", padding: "1px 4px", borderRadius: 2 }}>警報</span>}
                 {item.cats.has("爆發") && <span style={{ fontSize: 7, background: "#f0906e33", color: "#f0906e", padding: "1px 4px", borderRadius: 2 }}>爆發</span>}
               </div>
